@@ -1,0 +1,3 @@
+# 6FRP-AR v3 dependencies
+# Target: single Linux server with IPv6, no GPU
+torch>=2.0.0
