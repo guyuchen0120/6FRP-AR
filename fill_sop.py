@@ -113,20 +113,20 @@ TITLE = "6FRP（IPv6 全响应前缀探测）项目 SOP"
 
 # -------- Table 0: 基础环境要求 --------
 TABLE_ENV = {
-    (0, 1): "TencentOS Server 4.4（Linux 6.6.x，x86_64；兼容 CentOS 8 / Ubuntu 22.04 以上）",
-    (1, 1): "16 GB（最低 8 GB；在线推理+APD 并发建议 ≥ 16 GB）",
-    (2, 1): "100 GB（当前已用约 60 GB；数据/模型/日志预留 40 GB）",
-    (3, 1): "0 GB（当前 CPU 单机运行；若做大批量训练，建议 ≥ 8 GB，如 RTX 3080/4090）",
-    (4, 1): "8 核（最低 4 核；在线推理 APD 多并发建议 ≥ 8 核）",
+    (0, 1): "Linux x86_64（已验证 Linux 6.6；兼容 CentOS 8 / Ubuntu 22.04 以上）",
+    (1, 1): "≥ 16 GB（最低 8 GB；在线推理+APD 并发建议 ≥ 16 GB）",
+    (2, 1): "≥ 100 GB（数据/模型/日志预留 ≥ 40 GB）",
+    (3, 1): "0 GB 可运行（纯 CPU 可完成全流程推理；若做大批量训练，建议 ≥ 8 GB，如 RTX 3080/4090）",
+    (4, 1): "≥ 8 核（最低 4 核；在线推理 APD 多并发建议 ≥ 8 核）",
 }
 
 # -------- Table 1: 项目源码信息 --------
 PROJECT_ROOT = "/root/6FRP"
 
 TABLE_SRC = {
-    (0, 1): "本地路径：/root/6FRP（远端仓库未设置，建议后续推送到团队 Git；对应论文已在 paper/6FRP.docx、space_count/6FRP_infocom2027.tex）",
+    (0, 1): "Git 仓库：git@github.com:guyuchen0120/6FRP-AR.git（本仓库即为 6FRP 项目源码）\n论文配套文件：paper/6FRP.docx、space_count/6FRP_infocom2027.tex（均位于本仓库根目录下）\n克隆命令：git clone git@github.com:guyuchen0120/6FRP-AR.git 6FRP",
     (1, 1): "V1.0（dual_scan / online_infer 版本，对应 checkpoints/dual_scan/best_model.pt，训练于 2025-07-05）",
-    (2, 1): "main（本地分支；暂未提交到远程）",
+    (2, 1): "main（主分支）",
     (3, 1): (
         "语言：Python 3.11.6；\n"
         "深度学习：PyTorch 2.12.0（纯 CPU 可运行；selective_scan 用纯 PyTorch 实现，无需 mamba-ssm/causal-conv1d 等 CUDA 扩展）；\n"
@@ -173,7 +173,7 @@ TABLE_SRC = {
         "模型权重：\n"
         "  checkpoints/dual_scan/best_model.pt（8.3 MB，val-loss 最佳）\n"
         "  checkpoints/dual_scan/checkpoint_epoch{4,9,14,19}.pt\n"
-        "启停脚本：\n"
+        "启停脚本（均在仓库根目录执行）：\n"
         "  数据准备：python3 -m data_prep.prepare --bgp-table data/ipasn_20260429.dat \\\n"
         "              --as-meta data/as_org_category.csv --seeds data/seeds.txt \\\n"
         "              --out-dir data_fixed\n"
@@ -184,7 +184,7 @@ TABLE_SRC = {
         "              --data-dir data_fixed --output-dir results/online_run1\n"
         "数据库：无（结果以 JSON/TXT 文件形式持久化到 results/*/）"
     ),
-    (6, 1): "未提供 Dockerfile / docker-compose.yml（当前为裸机 Python 环境运行；如需容器化，建议基于 python:3.11-slim 镜像，apt 安装 iputils-ping、libpcap，pip 安装 torch==2.12.0、numpy、requests，再 COPY /root/6FRP 代码，并以 --cap-add=NET_RAW 运行以支持 ICMPv6）",
+    (6, 1): "未提供 Dockerfile / docker-compose.yml（当前为裸机 Python 环境运行；如需容器化，建议基于 python:3.11-slim 镜像，apt 安装 iputils-ping、libpcap，pip 安装 torch==2.12.0、numpy、requests，再 COPY 本仓库全部文件到镜像内 /app/6FRP，并以 --cap-add=NET_RAW 运行以支持 ICMPv6）",
     (7, 1): "无对外 HTTP/gRPC 接口（纯本地 Python CLI）；\n命令行参数见：python3 online_infer_dual_scan.py --help、python3 train_dual_scan.py --help；\n模型内部接口详见 generators/dual_scan_hmamba.py 中 DualScanHMamba.compute_mlm_loss / generate",
     (8, 1): (
         "paper/9-14.md       —— 项目方法总结、与 PaS / SubRecon / AddrProbe 等相关工作对比\n"
@@ -209,51 +209,52 @@ TABLE_SRC = {
 
 # -------- Table 2: 项目当前管理人员信息 --------
 TABLE_OWNER = {
-    (0, 1): "（待填写：当前负责人姓名）",
-    (1, 1): "（待填写：学号 / 工号）",
-    (2, 1): "（待填写：联系电话）",
-    (3, 1): "（待填写：邮箱）",
-    (4, 1): "（待填写：学校 / 实验室 / 部门）",
+    (0, 1): "谷雨宸",
+    (1, 1): "2026312506",
+    (2, 1): "18910566797",
+    (3, 1): "guyc26@mails.tsinghua.edu.cn",
+    (4, 1): "清华大学",
 }
 
 # -------- Table 3: 远程信息 --------
 TABLE_REMOTE = {
     (0, 1): (
-        "主机名：VM-42-229-tencentos\n"
-        "IP 地址：21.214.42.229（内网 172.17.0.1）；需额外一个 IPv6 全球单播地址用于 APD 发包\n"
+        "IP 地址：101.6.20.79（实验运行主机，所有训练与在线推理均在此机器完成；需具备可用的 IPv6 全球单播地址用于 APD 发包）\n"
         "端口：22（SSH；项目本身无对外端口）\n"
         "用户名：root（在线推理需要 root，用于原始 ICMPv6 socket）\n"
-        "操作系统：TencentOS Server 4.4\n"
-        "项目路径：/root/6FRP\n"
-        "公钥：（请在交接时追加当前负责人 ~/.ssh/id_ed25519.pub 内容）"
+        "操作系统：Linux x86_64\n"
+        "项目路径：仓库根目录下的 6FRP/（由 git clone git@github.com:guyuchen0120/6FRP-AR.git 得到）\n"
+        "公钥：请在交接时追加当前负责人 ~/.ssh/id_ed25519.pub 到服务器 ~/.ssh/authorized_keys"
     ),
     (1, 1): (
-        "专人负责的 SSH 公钥（追加到 ~/.ssh/authorized_keys 后即可免密登录）：\n"
+        "专人负责的 SSH 公钥（追加到 ~/.ssh/authorized_keys 后即可免密登录 101.6.20.79）：\n"
         "（请在交接时粘贴新同学 id_ed25519.pub / id_rsa.pub 的完整内容，示例：\n"
         "  ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@host）\n"
         "注意：\n"
-        "  1) 原有公钥（ssh-rsa-20240508235923）保留，用于回滚；\n"
+        "  1) 原有公钥保留，用于回滚；\n"
         "  2) 禁止将私钥提交到任何仓库；\n"
-        "  3) 远程服务器 /root/.ssh/ 权限需保持 700，authorized_keys 为 600。"
+        "  3) 服务器 ~/.ssh/ 权限需保持 700，authorized_keys 为 600。"
     ),
 }
 
 # -------- 安装步骤 (项目安装步骤段落 7 之后的 … 占位符 8-12) --------
+# 说明：所有路径均以本仓库根目录（即 git clone 后生成的 6FRP/ 目录）为相对根。
 INSTALL_STEPS = [
-    "步骤 1：准备运行环境。安装 Python 3.11（TencentOS 4 自带 /usr/bin/python3.11，若未安装则：dnf install python3.11 python3.11-pip -y）；确认 pip3 可用：pip3 --version。",
-    "步骤 2：克隆/拷贝源码。将 /root/6FRP 整个目录拷贝到目标机器（约 1.2 GB，含 data/、data_fixed/、checkpoints/、paper/、space_count/ 等）；或后续从 Git 仓库 git clone 下来后，再把大文件 best_model.pt、meta.json、seeds.txt 等按说明从数据服务器 scp 过来。",
-    "步骤 3：安装 Python 依赖。执行：pip3 install --upgrade pip && pip3 install torch==2.12.0 numpy requests 。若需 GPU 加速训练，另装与 CUDA 匹配的 torch 版本；本项目纯 CPU 可运行推理，无需 mamba-ssm / causal-conv1d 等 CUDA 扩展。",
-    "步骤 4：验证模型/数据可加载。执行：cd /root/6FRP && python3 -c \"import torch; ckpt=torch.load('checkpoints/dual_scan/best_model.pt', map_location='cpu'); print(list(ckpt.keys()), ckpt['config'])\"；再执行 python3 debug_train.py 做一次 1-batch 前向验证，确认模型/数据正常。",
+    "步骤 1：准备运行环境。安装 Python 3.11（推荐 3.11.6；dnf/apt 包管理器安装：dnf install python3.11 python3.11-pip -y 或 apt install python3.11 python3-pip -y）；确认 pip3 可用：pip3 --version。",
+    "步骤 2：克隆源码。git clone git@github.com:guyuchen0120/6FRP-AR.git 6FRP && cd 6FRP。注意：data/、data_fixed/、checkpoints/、paper/、space_count/ 等大文件目录（含 best_model.pt、meta.json、seeds.txt 等）若不在仓库中，需按说明从数据服务器单独 scp 拷贝；之后所有命令均在仓库根目录（./）下相对执行。",
+    "步骤 3：安装 Python 依赖。在仓库根目录执行：pip3 install --upgrade pip && pip3 install torch==2.12.0 numpy requests。若需 GPU 加速训练，另装与 CUDA 匹配的 torch 版本；本项目纯 CPU 可运行推理，无需 mamba-ssm / causal-conv1d 等 CUDA 扩展。",
+    "步骤 4：验证模型/数据可加载。在仓库根目录执行：python3 -c \"import torch; ckpt=torch.load('checkpoints/dual_scan/best_model.pt', map_location='cpu'); print(list(ckpt.keys()), ckpt['config'])\"；再执行 python3 debug_train.py 做一次 1-batch 前向验证，确认模型/数据正常。",
     "步骤 5：配置 IPv6 与网络能力。确认 ip -6 addr 能看到至少一个 global scope IPv6 地址；赋予 Python 原始 socket 权限（二选一）：① 以 root 身份运行 online_infer_dual_scan.py；② 为 python3 可执行文件设置 capability：sudo setcap cap_net_raw+ep $(readlink -f $(which python3))。无 IPv6 环境可先用 --dry-run 模拟 APD。",
 ]
 
 # -------- 运行步骤 (段落 13 之后的 … 占位符 14-18) --------
+# 说明：以下所有命令均在仓库根目录（6FRP/）下相对执行。
 RUN_STEPS = [
-    "步骤 1（可选，仅需重建数据集时执行）：数据预处理。cd /root/6FRP && python3 -m data_prep.prepare --bgp-table data/ipasn_20260429.dat --as-meta data/as_org_category.csv --seeds data/seeds.txt --out-dir data_fixed；生成 seeds_prepared.txt、meta.json、as_seed_db.json、vocabs.json、stats.json、filtered_seeds.txt。当前 data_fixed/ 已就绪，日常无需重跑。",
-    "步骤 2（可选，仅需重新训练时执行）：模型训练。python3 train_dual_scan.py --data-dir data_fixed --output-dir checkpoints/dual_scan --epochs 30 --batch-size 64 --lr 3e-4 --num-workers 4；每轮打印 Train/Val Loss & bit_acc，三阶段 coarse/medium/fine 掩码统计。默认每 5 epoch 保存一次 checkpoint，val-loss 最优者写入 best_model.pt。",
-    "步骤 3（主流程）：在线推理 + 主动探测。以 root 身份运行：sudo python3 online_infer_dual_scan.py --checkpoint checkpoints/dual_scan/best_model.pt --data-dir data_fixed --output-dir results/online_run1 --candidates-per-round 500 --temperature 0.8 --apd-concurrency 8 --apd-workers 4 --max-total-probes 6500000 --bootstrap-known-from-seeds。流程为：生成候选前缀 → 用 filtered_seeds 做子前缀过滤 → APD ICMPv6 探测（默认 16 个子前缀，success_rate≥0.875 判 FRP）→ 结果反馈到模型做在线微调 → 进入下一轮；达到 --max-total-probes 或触发 snapshot 硬停时结束。",
+    "步骤 1（可选，仅需重建数据集时执行）：数据预处理。在仓库根目录执行：python3 -m data_prep.prepare --bgp-table data/ipasn_20260429.dat --as-meta data/as_org_category.csv --seeds data/seeds.txt --out-dir data_fixed；生成 seeds_prepared.txt、meta.json、as_seed_db.json、vocabs.json、stats.json、filtered_seeds.txt。当前 data_fixed/ 已就绪，日常无需重跑。",
+    "步骤 2（可选，仅需重新训练时执行）：模型训练。在仓库根目录执行：python3 train_dual_scan.py --data-dir data_fixed --output-dir checkpoints/dual_scan --epochs 30 --batch-size 64 --lr 3e-4 --num-workers 4；每轮打印 Train/Val Loss & bit_acc，三阶段 coarse/medium/fine 掩码统计。默认每 5 epoch 保存一次 checkpoint，val-loss 最优者写入 best_model.pt。",
+    "步骤 3（主流程）：在线推理 + 主动探测。在仓库根目录以 root 身份运行：sudo python3 online_infer_dual_scan.py --checkpoint checkpoints/dual_scan/best_model.pt --data-dir data_fixed --output-dir results/online_run1 --candidates-per-round 500 --temperature 0.8 --apd-concurrency 8 --apd-workers 4 --max-total-probes 6500000 --bootstrap-known-from-seeds。流程为：生成候选前缀 → 用 filtered_seeds 做子前缀过滤 → APD ICMPv6 探测（默认 16 个子前缀，success_rate≥0.875 判 FRP）→ 结果反馈到模型做在线微调 → 进入下一轮；达到 --max-total-probes 或触发 snapshot 硬停时结束。",
     "步骤 4：结果归档与分析。运行结果位于 results/online_run1/：confirmed_frps.txt（最终 FRP 列表）、round_results.json（每轮详情）、summary.json（汇总，含 discovery_rate）、known_frps_merged.txt（累计快照）、model_final.pt（终态模型）、live_frp.log（增量 FRP 日志）。可用 space_count/count.py、space_count/plot_comparison.py 生成覆盖率/熵曲线图，与 Gungnir/Luori/AddrProbe 等基线对比。",
-    "步骤 5（独立场景）：仅做 APD 探测而不生成候选。python3 standalone_apd.py --input prefixes.txt --output apd_result.json --probe-count 16 --timeout 2.0 --concurrency 8；可对任意外部前缀列表（例如 BGP 全表、Gungnir 的候选集）运行 FRP 判定，并通过树对齐（Tree Alignment，--ta）细化到子前缀。日常运维可配合 cron 定期跑在线推理，每日/周落盘一次快照。",
+    "步骤 5（独立场景）：仅做 APD 探测而不生成候选。在仓库根目录执行：python3 standalone_apd.py --input prefixes.txt --output apd_result.json --probe-count 16 --timeout 2.0 --concurrency 8；可对任意外部前缀列表（例如 BGP 全表、Gungnir 的候选集）运行 FRP 判定，并通过树对齐（Tree Alignment，--ta）细化到子前缀。日常运维可配合 cron 定期跑在线推理，每日/周落盘一次快照。",
 ]
 
 
