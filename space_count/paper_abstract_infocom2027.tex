@@ -1,0 +1,63 @@
+% =============================================================================
+%  INFOCOM 2027 submission — abstract snippet
+%  Copy the block below into the IEEEtran template right after \maketitle
+% =============================================================================
+
+\title{6FRP: Discovering IPv6 Fully-Responsive Prefixes at Scale via
+       Dual-Scan Hierarchical State-Space Models}
+
+% -----------------------------------------------------------------------------
+%  Full abstract (~198 words)
+% -----------------------------------------------------------------------------
+\begin{abstract}
+Fully-Responsive Prefixes (FRPs)---IPv6 prefixes whose every address replies
+to probes---are pivotal for scalable Internet-wide measurement, target
+generation and reachability studies, yet the vast 128-bit address space
+renders exhaustive discovery infeasible. Existing generators such as
+\emph{Luori} and \emph{Gungnir} either exhaust the probing budget within a
+few Autonomous Systems (ASes) or fail to exploit the structural regularities
+shared by same-AS prefixes, leaving most of the addressable space
+unexplored. We present \textbf{6FRP}, an online FRP discovery framework
+built on a \emph{Dual-Scan Hierarchical Mamba} generator that jointly
+performs an \emph{outer scan} over the 128-bit hierarchy
+(coarse/medium/fine bit dependencies) and an \emph{inner scan} across
+same-AS samples, fused by an AS-conditioned gate; a three-stage
+masked-language-model decoder produces candidates that are validated by a
+ping-style Active Probing Detection module, whose feedback continually
+fine-tunes the model. Under identical probing budgets from 2\,M to 10\,M
+packets on the public IPv6 routing view, 6FRP discovers up to
+\textbf{2.8$\times$ more confirmed FRPs}, covers \textbf{5.9$\times$ more
+address space}, \textbf{3.2$\times$ more ASes} and \textbf{1.76$\times$
+more countries} than the state-of-the-art Gungnir, while achieving
+four-to-five orders-of-magnitude larger coverage than Luori---demonstrating
+that structure-aware sequence modelling turns limited probe budgets into
+markedly wider IPv6 visibility.
+\end{abstract}
+
+\begin{IEEEkeywords}
+IPv6 measurement, Fully-Responsive Prefix (FRP), Address-space discovery,
+Hierarchical Mamba, State-Space Model, Active probing, Online learning.
+\end{IEEEkeywords}
+
+
+% =============================================================================
+%  Optional: shorter 150-word variant if the CFP tightens the limit
+% =============================================================================
+\iffalse
+\begin{abstract}
+Fully-Responsive Prefixes (FRPs) are indispensable for IPv6 measurement,
+yet the 128-bit space makes exhaustive discovery impossible under any
+realistic probing budget. Existing generators (Luori, Gungnir) either
+concentrate on few ASes or ignore intra-AS structural regularities. We
+propose \textbf{6FRP}, an online framework based on a \emph{Dual-Scan
+Hierarchical Mamba}: an outer scan captures the coarse-to-fine bit
+hierarchy while an inner scan mines shared patterns across same-AS
+samples, fused by an AS-conditioned gate; candidates are validated by a
+ping-style Active Probing Detection module whose feedback fine-tunes the
+model online. Under identical 2\,M--10\,M probing budgets on the public
+IPv6 view, 6FRP discovers \textbf{2.8$\times$ more FRPs} and covers
+\textbf{5.9$\times$ more address space, 3.2$\times$ more ASes, and
+1.76$\times$ more countries} than Gungnir, with orders-of-magnitude gains
+over Luori.
+\end{abstract}
+\fi

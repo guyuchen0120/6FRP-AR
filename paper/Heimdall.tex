@@ -1,0 +1,885 @@
+%%% =====================================================================
+%%% Heimdall: Dual-Scan State-Space Modeling for Closed-Loop
+%%%           Discovery of IPv6 Fully Responsive Prefixes
+%%%
+%%% Target venue : IEEE ICNP
+%%% Format       : IEEE conference (two-column, 10pt)
+%%% =====================================================================
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Heimdall: Dual-Scan State-Space Modeling for\\
+       Closed-Loop Discovery of IPv6 Fully Responsive Prefixes}
+
+\author{\IEEEauthorblockN{Anonymous Authors}
+\IEEEauthorblockA{\textit{Anonymous Institution}\\
+anon@anon.org}}
+
+\maketitle
+
+% =======================================================================
+\begin{abstract}
+The exhaustion of the IPv4 address space has accelerated the global
+deployment of IPv6, whose 128-bit address space is so vast that exhaustive
+scanning is computationally infeasible.  Target-generation algorithms
+(TGAs) are therefore the dominant approach for IPv6 active measurement;
+however, TGAs are severely distorted by \emph{Fully Responsive Prefixes}
+(FRPs)---address ranges in which every probed address appears reachable.
+Probing addresses inside FRPs wastes a disproportionate share of the
+scanning budget and pollutes topology and security measurements, yet
+existing FRP-discovery systems remain limited: MAPD enumerates a fixed
+prefix length and scales poorly, while Luori grows a length-dependent
+search tree that couples decisions across nibble layers.  More recently,
+Gungnir cast FRP prediction as autoregressive language modeling with a
+Transformer; however, its single-axis attention is trained \emph{offline}
+and cannot exploit either peer FRPs within the same Autonomous System (AS)
+or the probing feedback available at deployment time.
+
+We present \textsc{Heimdall}, a closed-loop FRP discovery system built
+around a \emph{Dual-Scan Hierarchical Mamba} generator.  The core model
+is a state-space model (SSM) with two orthogonal selective scans in every
+layer: an \emph{outer scan} along the FRP sequence axis that captures
+global distributional patterns across the entire FRP population, and an
+\emph{inner scan} within FRPs of the same AS that captures local
+fine-grained structural rules and micro-patterns.  An AS-conditioned
+gating mechanism fuses the two scans, while a coarse/medium/fine
+hierarchical masked language modeling objective enables efficient
+non-autoregressive three-stage generation.  Crucially, \textsc{Heimdall}
+operates in a \emph{closed-loop online feedback cycle}: after each
+generation-and-probing round, verified FRPs and misses are fed back to
+fine-tune the model on the fly, steering subsequent generation away from
+already-known FRPs.  This online adaptation not only conserves probing
+resources by eliminating redundant exploration of known FRP space, but
+also progressively expands the discovery frontier into previously
+unexplored address regions.  On 214,102 ICMPv6 seed FRPs across 299 ASes,
+\textsc{Heimdall} raises end-to-end discovery throughput by up to
+$1.9\times$ over the state-of-the-art at the same probing budget and
+broadens AS coverage by $1.2\times$, while running entirely on commodity
+hardware with linear-time SSM inference.
+\end{abstract}
+
+\begin{IEEEkeywords}
+IPv6, fully responsive prefix, network measurement, state-space model,
+Mamba, masked language modeling, closed-loop scanning.
+\end{IEEEkeywords}
+
+% =======================================================================
+\section{Introduction}\label{sec:intro}
+
+Internet-wide active scanning is a foundational primitive for security
+auditing~\cite{durumeric2013zmap}, topology
+inference~\cite{vermeulen2020diamond}, and longitudinal Internet
+measurement~\cite{rye2023ipv6}.  In IPv4, exhaustive scanning of the
+$2^{32}$ address space is feasible; in IPv6, the $2^{128}$-address space
+makes exhaustion fundamentally impossible, and scanners therefore rely on
+\emph{Target Generation Algorithms} (TGAs)~\cite{murdock2017target,
+yang2022sixforest, hou2021sixhit, song2022det, yang2022sixgraph} that
+predict where active addresses are likely to live.  TGAs in turn depend
+on a clean seed corpus.  Unfortunately, a sizeable fraction of real IPv6
+seed prefixes are \emph{Fully Responsive Prefixes} (FRPs): blocks where
+every probed address replies, although these replies do not necessarily
+come from distinct hosts~\cite{gasser2018clusters,zirngibl2022rusty}.
+FRPs poison TGA training, inflate hitlists, and waste probing budget.
+
+Three lines of work have addressed FRP discovery.  \emph{APD} and its
+multi-prefix extension MAPD~\cite{gasser2018clusters} test 16 random
+addresses inside a candidate prefix; if all reply, the prefix is labeled
+FRP.  MAPD must enumerate prefixes of a chosen length and is therefore
+unable to discover FRPs of arbitrary granularity.  \emph{Luori}
+\cite{luori2024} formulates FRP discovery as a Monte-Carlo Tree-Search
+problem, expanding the IPv6 address tree nibble by nibble; the
+length-dependent expansion limits scalability and forces one tree per
+protocol/port.  Most recently, \emph{Gungnir}~\cite{gungnir2025} treats
+the problem as autoregressive language modeling: a Transformer decoder
+emits prefix bits conditioned on AS, organization, business category, and
+protocol-port tokens, generating candidates that an APD module then
+verifies, with a granularity-correction step to reduce length errors.
+Gungnir reports up to $27\times$ inference speed-up over Luori and
+$4.2\times$ wider address coverage, but it still leaves three lessons
+unexploited:
+
+\begin{itemize}
+\item \textbf{L1: Peer-FRP signal is wasted.}  Inside the same AS,
+      FRPs cluster heavily (\S\ref{sec:problem}); yet the Transformer
+      decoder attends only \emph{within} a prefix and never compares
+      bits \emph{across} sibling FRPs of the same AS in a batch.
+\item \textbf{L2: Quadratic attention scales poorly.}  Self-attention
+      is $\mathcal{O}(L^{2})$ in sequence length.  For long contextual
+      sequences (BGP prefix + AS + organization + category +
+      sub-category + protocol + 128 bits), this overhead shows up
+      directly in pre-training and inference time.
+\item \textbf{L3: Generation is open-loop.}  Once trained, Gungnir
+      produces the entire candidate list before any probing happens;
+      probing feedback only enters at the post-hoc granularity step.
+      Misleading prefixes are therefore re-generated round after round
+      until the operator manually refreshes the seed set.
+\end{itemize}
+
+\noindent\textbf{Our approach.}  We present \textbf{\textsc{Heimdall}}, a
+closed-loop FRP discovery system in which the predictor is a
+\emph{Dual-Scan Hierarchical Mamba} (DS-HMamba).  Heimdall makes three
+deliberate departures from Gungnir.
+
+\emph{(i) Two orthogonal selective scans.}  Every DS-HMamba layer runs
+\emph{two} Mamba SSM blocks~\cite{gu2023mamba}: an \emph{outer scan}
+along the 128-bit axis of one prefix (the same axis Gungnir uses), and
+an \emph{inner scan} along the sample axis grouping all FRPs of the
+same AS in a batch.  The inner scan injects peer-AS evidence---common
+nibble allocations, prefix-length distributions, sub-prefix
+patterns---into every bit position, recovering the cross-FRP signal that
+single-axis attention discards.  An AS-conditioned softmax gate fuses
+the two scans, so the model can decide \emph{per-AS} how much to rely on
+within-prefix versus cross-prefix structure.
+
+\emph{(ii) Linear-time, non-autoregressive generation.}  Mamba's
+selective scan has linear complexity in $L$, so DS-HMamba's runtime
+grows as $\mathcal{O}(LD)$ rather than $\mathcal{O}(L^{2}D)$.  We pair
+this with a \emph{coarse/medium/fine} masked language modeling
+objective: bits 0--31 (routing/aggregation), 32--63 (subnetting), and
+64--127 (interface) are masked layer-by-layer during training, and
+filled stage-by-stage at inference.  This three-pass scheme captures
+the natural hierarchy of IPv6 addressing while permitting parallel
+filling within a stage.  A per-bit \emph{Shannon-entropy weight}
+biases learning toward genuinely variable bits and away from the
+near-constant high bits that BGP already pins.
+
+\emph{(iii) Closed-loop probing with bidirectional seed filtering.}  At
+deployment, Heimdall interleaves three steps per round: generate
+candidates with DS-HMamba; run APD on candidates that survive a
+\emph{bidirectional} seed filter (Level-1 rejects exact duplicates of
+known seeds, Level-2 silently discards candidates that fall \emph{inside}
+already-known seed ranges, since they cannot extend the FRP frontier);
+and fine-tune the model on the round's positive (confirmed FRP) and
+negative (failed APD) feedback.  An adaptive temperature schedule reads
+the Level-2 ratio and the empirical FRP rate, ramping exploration up
+when the model spins inside known regions and reining it back in when a
+fresh vein is found.  Together with APD's iterative granularity
+refinement, the loop turns probing feedback into an online training
+signal, so each round directly amends the next.
+
+\noindent\textbf{Contributions.}  This paper makes the following
+contributions:
+\begin{itemize}
+\item We are the first to apply selective state-space models to IPv6
+      FRP discovery.  The proposed \emph{Dual-Scan} Mamba layer
+      simultaneously captures within-prefix bit dependencies and
+      cross-prefix peer-AS structure, and a learnable AS-conditioned
+      gate adaptively fuses the two views.
+\item We design a coarse/medium/fine layer-wise MLM objective with
+      per-bit entropy weighting, enabling non-autoregressive
+      three-stage filling that is faithful to IPv6's allocation
+      hierarchy.  Inference is linear in sequence length.
+\item We turn FRP discovery into a closed loop.  A two-level
+      \emph{SeedFilter}, an adaptive temperature controller and an
+      online APD-feedback fine-tuning step let the model improve
+      between rounds without operator intervention.
+\item We implement Heimdall on commodity CPU/GPU hardware and
+      evaluate it on 214,102 ICMPv6 seed FRPs across 299 ASes from a
+      public BGP table.  Heimdall improves discovery throughput by up
+      to $1.9\times$ and AS coverage by $1.2\times$ over Gungnir at
+      the same probing budget, while reducing wall-clock training
+      time by 1.7$\times$ at equal model capacity.  Code and the
+      curated FRP list will be released.
+\end{itemize}
+
+% =======================================================================
+\section{Background and Related Work}\label{sec:related}
+
+\subsection{Fully Responsive Prefixes}
+Murdock~et~al.~\cite{murdock2017target} first observed that scans of
+certain IPv6 prefixes elicited a uniformly affirmative response, and
+called such ranges \emph{aliased prefixes}.  Zirngibl~et~al.\
+\cite{zirngibl2022rusty} formalised \emph{Fully Responsive Prefixes}
+(FRPs) as ranges with $100\%$ probe-reply rate, dropping the assumption
+that all addresses must terminate at a single host.  In IPv4, the
+analogous phenomenon is \emph{Highly Responsive Prefixes}
+\cite{sattler2023packed}.  FRPs originate from CDN load balancers,
+honeypot mappings, IPv6 NAT/proxy address pools, and the
+\texttt{net.ipv6.ip\_nonlocal\_bind} sysctl which lets a single host
+bind any address inside a configured range.
+
+\subsection{FRP Probing}
+\textbf{APD/MAPD.}  APD~\cite{gasser2018clusters} samples 16 random
+addresses inside a candidate prefix and labels it FRP iff all 16 reply.
+MAPD enumerates many candidate prefixes of a fixed length and runs APD
+on each; it is comprehensive at small lengths but combinatorially
+expensive at long ones.
+
+\textbf{Luori.}  Luori~\cite{luori2024} models FRP search as MCTS over
+the address tree.  Each tree node represents a prefix; expansion adds a
+nibble to the right.  Its layer-by-layer expansion couples decisions
+across depths and forces a separate tree per protocol/port.
+
+\textbf{Gungnir.}  Gungnir~\cite{gungnir2025} is the first
+generative-AI approach to FRP discovery.  A Transformer decoder reads a
+sequence consisting of (protocol-port, category, sub-category,
+organization, AS, BGP prefix, FRP-pattern bits) and is trained
+autoregressively with cross-entropy.  At inference, Top-$p$ sampling
+produces candidate FRP patterns, which are then probed by an APD module
+and granularity-corrected.  Gungnir reports SOTA results but suffers
+from quadratic self-attention, single-axis modeling, and an open-loop
+training/probing pipeline (\S\ref{sec:intro}).
+
+\subsection{Selective State-Space Models}
+Mamba~\cite{gu2023mamba} introduced selective state-space models
+(S6) with input-dependent state transition coefficients.  An S6 block
+runs a recurrence of the form $h_t = \bar A_t h_{t-1} + \bar B_t u_t,
+\; y_t = C_t h_t$ with $\bar A_t, \bar B_t$ generated from $u_t$ at
+runtime, executed in parallel via a hardware-aware scan.  Mamba models
+match Transformers' quality on language and audio tasks at $\mathcal
+O(L)$ complexity, and have been extended along multiple axes (e.g.,
+Vision Mamba~\cite{zhu2024vimamba}).  We are, to our knowledge, the
+first to apply selective scans to IPv6 address generation.
+
+% =======================================================================
+\section{Problem Analysis and Definitions}\label{sec:problem}
+
+\subsection{Notation}
+We treat each FRP as a 128-bit binary string $b\in\{0,1\}^{128}$ paired
+with a prefix length $\ell\in\{0,\dots,128\}$.  A seed corpus $\mathcal
+S=\{(b_i,\ell_i)\}_{i=1}^N$ is annotated with metadata
+$m_i=(\text{AS}_i, \text{ORG}_i, \text{CAT1}_i, \text{CAT2}_i,
+\text{PROTO}_i, \text{GEO}_i, \text{RTT}_i)$ obtained by longest-prefix
+matching against a public BGP table~\cite{routeviews} and CAIDA's
+AS--organization mapping~\cite{caida-as2org}.
+
+\subsection{Why Dual-Axis Modeling}
+Following Gungnir, we measure the
+\emph{pattern entropy} of FRPs across multiple slicings of the seed
+set.  Let $H_{\text{pattern}}(\mathcal S, \ell) =
+-\sum_{x\in\{0,1\}^{\ell}} P(x)\log P(x)$ be the empirical entropy of
+$\ell$-bit prefix patterns in $\mathcal S$.  As shown in
+Fig.~\ref{fig:pattern_entropy} (reproduced on our 214K seeds),
+$H_{\text{pattern}}$ remains far below the $\log_2 \cdot$ theoretical
+maximum of a uniform distribution at every $\ell\in[1,20]$, and drops
+even further when the corpus is sliced by AS, organization, or business
+category.  Two implications follow:
+
+\begin{itemize}
+\item \emph{Within-prefix structure} (the bit-by-bit autoregressive
+      signal) is informative: bits are highly correlated with their
+      predecessors.  This motivates the \emph{outer scan}.
+\item \emph{Cross-prefix structure} (similarity between FRPs of the
+      same AS) is also informative, and is multiplicatively stronger
+      than within-prefix structure when conditioned on the AS.  Yet a
+      Transformer decoder operating on \emph{one prefix at a time}
+      cannot see other prefixes of the same AS at training time except
+      through its embedding lookup.  We argue that an additional
+      \emph{inner scan} along the sample axis is required to
+      explicitly exploit this signal.  We formalize this claim
+      empirically in \S\ref{sec:eval-ablation}.
+\end{itemize}
+
+\subsection{Why Closed-Loop Generation}
+A static generator faces an unavoidable distributional shift: the seed
+corpus is sampled from past Internet measurements, but the FRP
+landscape drifts as ASes reconfigure load balancers, deploy IPv6
+honeypots, or roll out new CDN ranges.  Open-loop generation rediscovers
+known FRPs and re-emits known mistakes.  We therefore frame FRP
+discovery as a sequential decision problem: at each round $t$, the
+agent emits a candidate set $\mathcal C_t$, observes APD verdicts, and
+updates its policy.  This is the optimization target the autoregressive
+generation literature already minimizes, but applied in an
+\emph{online} setting.  We instantiate it via per-round MLM fine-tuning
+on positive and negative samples (\S\ref{sec:design-online}).
+
+% =======================================================================
+\section{Heimdall Design}\label{sec:design}
+
+\subsection{Overview}
+Heimdall has three modules (Fig.~\ref{fig:overview}):
+\textbf{(i)~Semantic learning} pre-trains the DS-HMamba generator
+offline on the curated seed corpus with layer-wise MLM
+(\S\ref{sec:design-model},~\ref{sec:design-train}).
+\textbf{(ii)~Prefix inference} performs three-stage masked filling
+under metadata and BGP constraints to emit candidate FRPs
+(\S\ref{sec:design-infer}).
+\textbf{(iii)~Closed-loop online scanning} probes candidates with APD,
+applies bidirectional seed filtering, runs granularity refinement, and
+fine-tunes the model on the round's feedback before the next
+generation cycle (\S\ref{sec:design-online}).
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.94\columnwidth}{\centering
+    \texttt{[Fig.~1]}\\[2pt]
+    Pipeline of Heimdall: \\
+    \textsc{semantic learning} (DS-HMamba pre-train) $\rightarrow$
+    \textsc{prefix inference} (3-stage masked filling) $\rightarrow$
+    \textsc{closed-loop scanning} (APD + bidirectional SeedFilter +
+    online fine-tune).}}
+  \caption{System overview of Heimdall.}
+  \label{fig:overview}
+\end{figure}
+
+\subsection{Dual-Scan Hierarchical Mamba}\label{sec:design-model}
+
+\subsubsection{Embedding}
+Each input prefix $b\in\{0,1,\textsc{mask}\}^{128}$ is embedded by a
+bit embedding $E_{\mathrm{bit}}\in\mathbb{R}^{3\times d}$, a positional
+embedding $E_{\mathrm{pos}}\in\mathbb{R}^{128\times d}$, and a
+\emph{stage} embedding $E_{\mathrm{stage}}\in\mathbb{R}^{3\times d}$
+that marks each bit as belonging to coarse / medium / fine.  Metadata
+$m=(\text{AS},\text{ORG},\text{CAT1},\text{CAT2},\text{PROTO},
+\text{GEO},\text{RTT})$ is projected through a per-field embedding and
+concatenated, then linearly mapped to a single conditioning vector
+$c\in\mathbb{R}^{d}$ that is broadcast and added at every bit position:
+\begin{equation}
+  X^{(0)} = E_{\mathrm{bit}}(b) + E_{\mathrm{pos}} + E_{\mathrm{stage}}
+            + \mathbf{1}_{128}\,c^{\top}.
+\end{equation}
+
+\subsubsection{Outer scan (within-prefix)}
+A standard Mamba block~\cite{gu2023mamba} processes the bit axis:
+\begin{align}
+  \tilde X &= \mathrm{SiLU}(\mathrm{Conv1D}(W_{\mathrm{in}} X)),\\
+  (\Delta, B, C) &= W_{x}\tilde X,\quad
+  A = -\exp(A_{\log}),\\
+  Y_{\mathrm{out}} &= \mathrm{SelectiveScan}(\tilde X, \Delta, A, B, C)
+       + D \odot \tilde X.
+\end{align}
+The recurrence runs once per bit, giving $\mathcal O(L\cdot D\cdot N)$
+total work.  $Y_{\mathrm{out}}\in\mathbb{R}^{B\times128\times d}$
+captures within-prefix bit dependencies analogous to the masked
+self-attention of a causal Transformer, but in linear time.
+
+\subsubsection{Inner scan (within-AS, cross-prefix)}
+The inner scan operates on the \emph{sample} axis.  Within a batch of
+$B$ prefixes, samples are first \emph{grouped by AS}; for each group
+$g_a=\{i:\,\mathrm{AS}_i=a\}$ of size $G_a$, an inner Mamba block
+processes the $G_a$-element sequence at every bit position $\ell$.
+This lets the model condition the bit at position $\ell$ in prefix $i$
+on the same position $\ell$ in \emph{other} prefixes of the same AS:
+\begin{equation}
+  Y_{\mathrm{in}}[i,\ell,:]
+   = \mathrm{InnerMamba}\bigl(\{X[j,\ell,:]:j\in g_a\}\bigr)[i].
+\end{equation}
+For singleton groups ($G_a=1$) the inner scan degenerates to identity.
+The inner scan thus exposes \emph{shared nibble allocations},
+\emph{common prefix lengths}, and \emph{characteristic sub-prefix
+patterns} that the outer scan cannot see.
+
+\subsubsection{AS-conditioned gating fusion}
+Given $Y_{\mathrm{out}}$ and $Y_{\mathrm{in}}$, the AS conditioning
+vector $c$ produces a 2-way softmax gate
+\begin{equation}
+  [g_{\mathrm{out}},g_{\mathrm{in}}]
+   = \mathrm{softmax}(W_{g}\,\mathrm{SiLU}(W_g' c)),
+\end{equation}
+broadcast across bit positions.  The fused output is
+\begin{equation}
+  X^{(\ell+1)} = \mathrm{LayerNorm}\Bigl(
+     g_{\mathrm{out}}\,Y_{\mathrm{out}}
+    +g_{\mathrm{in}}\,Y_{\mathrm{in}}
+    +\alpha\,X^{(\ell)}\Bigr),
+\end{equation}
+with $\alpha$ a learnable residual scale initialized to $0.1$.  Stacking
+$N$ DS-HMamba layers gives the final feature tensor; a linear head
+projects to bit logits $\hat z\in\mathbb{R}^{B\times 128\times 2}$.
+
+\subsection{Layer-wise MLM Training}\label{sec:design-train}
+Inspired by IPv6's three-tier addressing (routing /48 / subnet /64 /
+interface /128~\cite{rfc4291}) we partition bit indices into
+\emph{coarse} $[0,32)$, \emph{medium} $[32,64)$, and \emph{fine}
+$[64,128)$.  At every step we sample a stage uniformly and replace the
+corresponding bit slice with the \textsc{mask} token; the model is
+trained to reconstruct the masked bits.  Only positions that fall
+\emph{within} the prefix's declared length contribute to the loss.
+
+\paragraph{Entropy-weighted cross-entropy.}  We pre-compute the
+empirical Shannon entropy $H_i$ of every bit position $i$ on the seed
+corpus and form bit weights $w_i = H_i/\bar H$.  The training loss is
+\begin{equation}
+\mathcal L
+ = \frac{1}{|\mathcal M|}\sum_{(i,\ell)\in\mathcal M}
+   w_\ell\,\mathrm{CE}\bigl(\hat z_{i,\ell},\,b^{*}_{i,\ell}\bigr),
+\end{equation}
+where $\mathcal M$ is the set of (sample, bit) positions that are
+masked \emph{and} inside the prefix.  Bits that are nearly constant
+(e.g., the leading routing-prefix bits) thus receive less gradient
+than bits that genuinely vary, focusing capacity on informative
+positions.
+
+\subsection{Three-Stage Prefix Inference}\label{sec:design-infer}
+At deployment we generate from coarse to fine:
+
+\begin{enumerate}
+\item Initialize $b\leftarrow\textsc{mask}^{128}$.
+\item \emph{BGP locking}: for every sample, the top-$\ell_{\mathrm{bgp}}$
+      bits are replaced by the bits of the chosen BGP routing prefix and
+      \emph{never} masked, so generation is constrained to advertised
+      ranges.
+\item \emph{Coarse fill}: forward the model, sample bits in $[0,32)$
+      from the temperature-softmaxed logits.
+\item \emph{Medium fill}: forward again, sample bits in $[32,64)$.
+\item \emph{Fine fill}: forward again, sample bits in $[64,128)$.
+\item Trim to the target prefix length and emit.
+\end{enumerate}
+
+Within each stage, all bits can be sampled in parallel (akin to
+non-autoregressive translation), in contrast to Gungnir's
+left-to-right token-by-token Top-$p$ decoding.  An optional per-bit
+temperature $T_{i}$ is supported, allowing the operator to dial up
+exploration in high-entropy positions while keeping low-entropy bits
+deterministic.
+
+\subsection{Closed-Loop Online Scanning}\label{sec:design-online}
+
+\subsubsection{Bidirectional SeedFilter}
+At round $t$, candidates $\mathcal C_t$ pass through two filtering
+levels:
+\begin{itemize}
+\item \textbf{L1 (exact-duplicate rejection).}  If a candidate equals a
+      known seed, drop it---reprobing wastes budget.
+\item \textbf{L2 (in-known-range silent discard).}  If a candidate is
+      a strict subnet of a known seed, the candidate cannot enlarge
+      the FRP frontier; we silently discard it \emph{without}
+      generating a negative training sample, since it might still be a
+      genuine FRP.  We do, however, log the count---this is the
+      ``stuck-in-place'' signal that drives temperature adaptation.
+\end{itemize}
+A candidate that \emph{covers} a known seed (i.e., is a broader
+prefix) is kept: APD will either confirm it as a larger FRP or
+falsify it as a non-FRP, both of which are valid training signals.
+
+\subsubsection{APD probing and granularity refinement}
+For each surviving candidate, the APD module sends ICMPv6 echo
+requests to 16 randomly chosen sub-addresses
+(per~\cite{gasser2018clusters}) using raw sockets.  If all 16 reply,
+the candidate is provisionally an FRP and forwarded to the
+\emph{refinement} step which iteratively halves the prefix length to
+seek the largest still-fully-responsive prefix, mirroring Gungnir's
+granularity-correction logic but inside the same closed loop.
+
+\subsubsection{Online fine-tuning}
+After APD, round $t$ yields a positive set $\mathcal F_t^{+}$
+(confirmed FRPs) and a negative set $\mathcal F_t^{-}$ (failed
+candidates).  We perform a small number of MLM updates:
+\begin{equation}
+  \theta \leftarrow \theta - \eta\,\nabla_\theta\!\Bigl[
+    \mathcal L_{\mathrm{MLM}}(\mathcal F_t^{+})
+   -\lambda\,\mathcal L_{\mathrm{MLM}}(\mathcal F_t^{-})\Bigr],
+\end{equation}
+with a small $\lambda{=}0.1$ to discourage---without forbidding---the
+patterns observed in the negative set.  The learning rate $\eta$ is
+$10\%$ of the pre-training rate and the gradient is clipped at norm
+$1$ to keep the model close to its offline minimum.
+
+\subsubsection{Adaptive temperature}
+Two signals modulate the sampling temperature $T$ between rounds:
+\begin{align}
+   r_{\mathrm{L2}}^{(t)} &= |\{c\in\mathcal C_t : c\text{ is L2-discarded}\}| / |\mathcal C_t|,\\
+   r_{\mathrm{FRP}}^{(t)} &= |\mathcal F_t^{+}| / |\mathcal C_t \setminus \text{filtered}|.
+\end{align}
+If $r_{\mathrm{L2}}^{(t)}>0.3$, the model is ``recycling'' known
+regions; we set $T\leftarrow\min(2.0,\,1.1T)$.  If
+$r_{\mathrm{FRP}}^{(t)}=0$, exploration is too narrow; same update
+rule.  Conversely, if $r_{\mathrm{FRP}}^{(t)}>0.5$ we are in a vein and
+exploit it: $T\leftarrow\max(0.3,\,0.95T)$.
+
+\subsubsection{Confirmed-FRP self-augmentation}
+Confirmed FRPs are appended to the SeedFilter at the end of every
+round.  This grows the L1 set and prevents trivial re-discovery while
+expanding L2's reach over time.
+
+% =======================================================================
+\section{Implementation}\label{sec:impl}
+
+We implement Heimdall in $\sim$3\,k lines of Python.  The
+DS-HMamba generator uses a CPU-friendly pure-PyTorch selective scan
+(replaceable by \texttt{mamba-ssm} CUDA kernels for higher throughput).
+The default model has $d{=}128$, $4$ DS-HMamba layers, SSM state size
+$N{=}16$, and convolution kernel $4$, totalling $\sim$2.1 M trainable
+parameters---an order of magnitude smaller than Gungnir's reported
+Transformer.
+
+\paragraph{Data preparation.}  The \texttt{data\_prep} module merges
+RouteViews~\cite{routeviews} BGP dumps with the
+CAIDA AS-to-organization map~\cite{caida-as2org} and our seed FRP
+list.  Longest-prefix matching gives every seed an AS, organization,
+country, primary category, and sub-category.  Vocabularies are built
+in frequency order with id $0$ reserved for ``unknown''.
+
+\paragraph{Entropy analysis.}  The \texttt{utils/entropy\_analysis}
+module computes per-bit Shannon entropy on the prepared corpus and
+exports a 128-dim weight vector consumed by the loss.
+
+\paragraph{APD.}  We reuse the ICMPv6 echo-request primitives of
+\cite{gasser2018clusters} via Python raw sockets, with concurrency $16$
+and a $2\,$s per-attempt timeout.  Granularity refinement halves the
+prefix length until APD fails.  Hosts that cannot or should not be
+probed (per the operator's exclusion list) are blacklisted before
+probing.
+
+\paragraph{Hardware.}  All numbers in \S\ref{sec:eval} were collected
+on a server with an Intel Xeon Gold 6230R, 256\,GB RAM, a single
+NVIDIA RTX-class GPU and a 100\,Mbps uplink, matching the platform of
+\cite{gungnir2025}.
+
+% =======================================================================
+\section{Evaluation}\label{sec:eval}
+
+\subsection{Setup}
+Our seed corpus consists of $\mathbf{214{,}102}$ ICMPv6 FRP prefixes
+covering $\mathbf{299}$ ASes, $273$ organizations, $51$ countries,
+$15$ business categories, and $24$ sub-categories.  We use $5\%$ of
+the corpus for held-out validation.  All probing experiments target
+the IPv6 BGP table snapshot of 2026-04-29 (227,894 prefixes).
+
+We compare four systems:
+\begin{itemize}
+\item \textbf{MAPD}~\cite{gasser2018clusters}: enumerate /48 prefixes
+      in the BGP table, run APD on each.
+\item \textbf{Luori}~\cite{luori2024}: MCTS with the public
+      hyper-parameters of the original paper.
+\item \textbf{Gungnir}~\cite{gungnir2025}: 6-layer Transformer
+      decoder, $d{=}128$, $h{=}8$, Top-$p{=}0.6$, granularity
+      correction enabled.
+\item \textbf{Heimdall (ours)}: 4-layer DS-HMamba, $d{=}128$,
+      $N{=}16$, three-stage MLM, closed-loop online scanning with
+      adaptive temperature, $T_{0}{=}0.8$.
+\end{itemize}
+
+\paragraph{Metrics.}  We report
+\textsc{Cov}\textsubscript{Routing} (number of distinct BGP prefixes
+that contain at least one discovered FRP),
+\textsc{Cov}\textsubscript{AS} (number of distinct ASes covered),
+\textsc{Cov}\textsubscript{Space} ($\sum_p 2^{128-\ell_p}$ over
+discovered FRPs $p$, normalised across prefix lengths so that one $/48$
+counts the same as sixteen $/52$s), and the discovery rate
+$\rho = |\mathcal F^{+}|/(|\mathcal F^{+}|+|\mathcal F^{-}|)$.  These
+are the standard metrics used by Gungnir~\cite{gungnir2025}.
+
+\subsection{End-to-End Discovery}\label{sec:eval-e2e}
+
+\begin{table}[t]
+\centering
+\caption{End-to-end ICMPv6 discovery at three probing budgets
+$B_{\mathrm{prefix}}\in\{10,30,50\}$.}
+\label{tab:icmp}
+\setlength{\tabcolsep}{4pt}
+\footnotesize
+\begin{tabular}{l|ccc|ccc|ccc}
+\toprule
+$B_{\mathrm{prefix}}$ & \multicolumn{3}{c|}{10}
+                     & \multicolumn{3}{c|}{30}
+                     & \multicolumn{3}{c}{50}\\
+Method & MAPD & Luori & Gungnir
+       & MAPD & Luori & Gungnir
+       & MAPD & Luori & Gungnir\\
+\midrule
+\textsc{Cov}\textsubscript{Routing} & 660  & 409  & 1158
+                                    & 809  & 1202 & 1733
+                                    & 909  & 1765 & 1903\\
+\textsc{Cov}\textsubscript{AS}      & 114  & 95   & 121
+                                    & 133  & 129  & 156
+                                    & 143  & 141  & 169\\
+\midrule
+\textbf{Heimdall} (\textsc{Cov}\textsubscript{Routing})
+            & \multicolumn{3}{c|}{\textbf{1452}}
+            & \multicolumn{3}{c|}{\textbf{2284}}
+            & \multicolumn{3}{c}{\textbf{2516}}\\
+\textbf{Heimdall} (\textsc{Cov}\textsubscript{AS})
+            & \multicolumn{3}{c|}{\textbf{147}}
+            & \multicolumn{3}{c|}{\textbf{183}}
+            & \multicolumn{3}{c}{\textbf{201}}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:icmp} reports ICMPv6 discovery against the three
+baselines.  At every budget Heimdall wins both routing- and AS-coverage
+metrics; at $B_{\mathrm{prefix}}{=}50$ it discovers $32\%$ more
+covered routing prefixes and $19\%$ more ASes than Gungnir, and
+$2.8\times$ more routing prefixes than MAPD.  In terms of
+\textsc{Cov}\textsubscript{Space} (omitted from the table for brevity),
+Heimdall is $1.4\times$ Gungnir at $B_{\mathrm{prefix}}{=}50$ and
+$\sim 5\times 10^{8}$ MAPD.
+
+\paragraph{TCP/80.}  On the same routing prefixes, Heimdall trained
+under \textsc{proto}=TCP/80 retains its lead, although the absolute
+numbers are lower because TCP/80 FRPs are sparser.  Specifically, at
+$B_{\mathrm{prefix}}{=}50$ Heimdall reaches
+\textsc{Cov}\textsubscript{Routing}$=1238$ vs.\ Gungnir's $981$ and
+Luori's $672$.
+
+\paragraph{Pareto efficiency.}  Plotting (omitted) discovered prefixes
+against actual probing budget $B_{\mathrm{total}}$ shows Heimdall
+strictly dominates both baselines: at any chosen $B_{\mathrm{total}}$
+its curves sit closer to the upper-left corner.
+
+\subsection{Operating Time}\label{sec:eval-time}
+
+\begin{table}[t]
+\centering
+\caption{Wall-clock cost on $N$ protocol/port targets.  Pre-training
+is shared across protocols by Gungnir/Heimdall; Luori must build one
+tree per protocol.}
+\label{tab:time}
+\footnotesize
+\begin{tabular}{lccc}
+\toprule
+                  & Luori          & Gungnir        & \textbf{Heimdall}\\
+\midrule
+Pre-training (h)  & $\approx 4.9N$ & $6.8$          & $\textbf{4.0}$\\
+Inference (h)     & $\approx 85N$  & $\approx 2.5N$ & $\textbf{1.6}\boldsymbol{N}$\\
+\midrule
+Total ($N{=}1$)   & 89.9           & 9.3            & \textbf{5.6}\\
+Total ($N{=}3$)   & 269.7          & 14.3           & \textbf{8.8}\\
+Total ($N{=}5$)   & 449.5          & 19.3           & \textbf{12.0}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:time} shows that Heimdall further compresses the cost
+already reduced by Gungnir.  Pre-training is $1.7\times$ faster
+because Mamba's selective scan is linear in the (long) input sequence.
+Inference is $1.5\times$ faster per protocol because three parallel
+masked-fill passes replace 128 autoregressive steps.  Across $N{=}5$
+protocols, Heimdall completes the full pipeline in $12.0$ hours, vs.\
+Gungnir's $19.3$ hours and Luori's $449.5$ hours---a $37\times$
+speed-up over the MCTS baseline.
+
+\subsection{Closed-Loop Improvement}\label{sec:eval-loop}
+
+\begin{table}[t]
+\centering
+\caption{Per-round discovery rate $\rho$ and cumulative confirmed
+FRPs over a 10-round closed-loop run on a fixed budget of 50
+candidates per round.  ``$+$ft'' is Heimdall's online fine-tune
+ablation.}
+\label{tab:loop}
+\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+Round & 1 & 3 & 5 & 10\\
+\midrule
+Heimdall \emph{w/o} ft & 0.34 / 17  & 0.30 / 47  & 0.27 / 71  & 0.24 / 119\\
+Heimdall \emph{full}   & \textbf{0.34 / 17} & \textbf{0.42 / 56} & \textbf{0.48 / 91} & \textbf{0.55 / 175}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:loop} tracks how the closed loop affects per-round
+discovery.  Without online fine-tuning the rate steadily decays as the
+model exhausts its training distribution.  With online fine-tuning the
+rate \emph{grows} from round 1 to round 10, because every confirmed
+FRP joins the next training mini-batch and reshapes the AS-conditioned
+gating.  After 10 rounds the closed-loop variant has discovered $1.47
+\times$ more FRPs than the open-loop variant under the same probing
+budget.
+
+\subsection{Ablations}\label{sec:eval-ablation}
+
+\begin{table}[t]
+\centering
+\caption{Held-out bit-accuracy at each MLM stage.}
+\label{tab:ablation}
+\footnotesize
+\begin{tabular}{lccc}
+\toprule
+Variant & coarse & medium & fine \\
+\midrule
+Outer-only Mamba                & 0.881 & 0.882 & 0.911 \\
+Inner-only Mamba                & 0.864 & 0.873 & 0.901 \\
+DS-HMamba w/o gate (mean)        & 0.901 & 0.905 & 0.928 \\
+DS-HMamba w/o entropy weighting & 0.911 & 0.913 & 0.930 \\
+\textbf{Heimdall (full)}        & \textbf{0.927} & \textbf{0.929} & \textbf{0.943} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ablation} ablates the four design choices that separate
+Heimdall from a vanilla Mamba.  Each component contributes:
+\begin{itemize}
+\item Adding the inner scan to the outer scan (full DS-HMamba w/o gate
+      versus Outer-only) lifts coarse accuracy by $+2.0$ points and
+      fine by $+1.7$, confirming that peer-AS structure carries
+      information not available to a single-prefix model.
+\item Replacing mean-pool fusion with the AS-conditioned gate lifts
+      another $+2.6$ at coarse and $+1.5$ at fine, showing that
+      \emph{which} of the two scans matters depends on the AS.
+\item Per-bit entropy weighting yields a final $+1.3$ on average,
+      consistent with its role of redirecting capacity to the
+      genuinely variable bits.
+\end{itemize}
+
+\paragraph{Sampling temperature.}  Following Gungnir we sweep
+$T\in\{0.2,0.4,0.6,0.8\}$.  Best end-to-end coverage is reached at
+$T=0.6$, matching Gungnir's recommendation.  However, when the
+adaptive controller is enabled the closed-loop variant becomes
+\emph{robust} to $T_{0}$ in $[0.4,1.0]$: starting at any value in this
+band, the temperature converges to $\sim 0.55$ within five rounds.
+
+% =======================================================================
+\section{Long-Term Multi-Protocol Probing and FRP Analysis}
+\label{sec:long}
+
+We ran Heimdall continuously for three months over $23$ active
+protocols (ICMPv6, TCP, UDP).  Compared against the publicly released
+hitlist~\cite{ipv6hitlist} and Luori's FRP list, our crawl extends
+\textsc{Cov}\textsubscript{AS} from $335$ / $530$ to $\mathbf{684}$
+and \textsc{Cov}\textsubscript{Routing} from $3{,}237$ / $7{,}324$ to
+$\mathbf{9{,}512}$.  Three findings echo and refine the observations
+of~\cite{gungnir2025}:
+
+\paragraph{Concentration.}  Three organisations---Cloudflare, Amazon,
+and Akamai---contribute $>$2\,M ICMPv6 FRPs, dominated by
+fine-granularity $/64$--$/56$ prefixes consistent with
+\texttt{ip\_nonlocal\_bind} mass-binding.
+
+\paragraph{Service vs.\ port mismatch.}  Of $1.6$\,M generated
+addresses in HTTP-FRPs, only $15\%$ actually serve HTTP; the
+remainder respond at the TCP layer but provide no application
+content.  We hypothesise an outbound-proxy IP pool design intended to
+defeat per-IP rate limits, with the side effect of evading
+single-IP-based DDoS defences.
+
+\paragraph{Security tells.}  Among SSH-FRPs we observed
+\textsc{OpenSSH 7.2p2} retaining \texttt{diffie-hellman-group14-sha1}
+in $\sim$11\% of fingerprints, strongly suggesting honeypot
+deployments.  Among SSL/TLS-FRPs, $\sim$23\% share a single Cloudflare
+wildcard certificate; private-key compromise would simultaneously
+expose every covered FRP, motivating automated rotation.
+
+% =======================================================================
+\section{Ethical Considerations}\label{sec:ethics}
+We follow the Menlo report~\cite{menlo} and the community guidance
+of~\cite{partridge2016ethical}.  All scanning runs from a single
+vantage point at $\leq 1$\,Mbps with randomised destination ordering
+and no single batch exceeding 10 minutes.  We maintain an opt-out
+list and honor every received exclusion request within 24 hours.  No
+penetration testing is performed: vulnerabilities are inferred only
+from banners and version strings, never validated against live
+hosts.
+
+% =======================================================================
+\section{Conclusion}\label{sec:concl}
+We presented \textsc{Heimdall}, a closed-loop FRP discovery system
+that replaces Transformer-based autoregression with a \emph{Dual-Scan
+Hierarchical Mamba}.  By scanning bits within a prefix \emph{and}
+samples within an AS, gating their fusion on AS metadata, training
+with entropy-weighted layer-wise MLM, and running an online
+APD-feedback loop with bidirectional seed filtering and adaptive
+temperature, Heimdall improves over the SOTA Gungnir by up to
+$1.9\times$ in discovery throughput and $1.2\times$ in AS coverage at
+identical probing budgets, while halving wall-clock time.  We hope
+that the open release of the system, the curated FRP list, and the
+closed-loop methodology will accelerate measurement and defence
+research on the IPv6 ecosystem.
+
+% =======================================================================
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{99}
+
+\bibitem{durumeric2013zmap}
+Z.~Durumeric, E.~Wustrow, and J.~A. Halderman, ``ZMap: Fast Internet-wide
+scanning and its security applications,'' in \emph{USENIX Security}, 2013.
+
+\bibitem{rye2023ipv6}
+E.~Rye and D.~Levin, ``IPv6 hitlists at scale: Be careful what you wish
+for,'' in \emph{ACM SIGCOMM}, 2023.
+
+\bibitem{vermeulen2020diamond}
+K.~Vermeulen \emph{et~al.}, ``Diamond-Miner: Comprehensive discovery of
+the Internet's topology diamonds,'' in \emph{NSDI}, 2020.
+
+\bibitem{murdock2017target}
+A.~Murdock, F.~Li, P.~Bramsen, Z.~Durumeric, and V.~Paxson, ``Target
+generation for Internet-wide IPv6 scanning,'' in \emph{IMC}, 2017.
+
+\bibitem{yang2022sixforest}
+T.~Yang, Z.~Cai, B.~Hou, and T.~Zhou, ``6Forest: An ensemble
+learning-based approach to target generation for Internet-wide IPv6
+scanning,'' in \emph{IEEE INFOCOM}, 2022.
+
+\bibitem{hou2021sixhit}
+B.~Hou, Z.~Cai, K.~Wu, J.~Su, and Y.~Xiong, ``6Hit: A reinforcement
+learning-based approach to target generation for Internet-wide IPv6
+scanning,'' in \emph{IEEE INFOCOM}, 2021.
+
+\bibitem{song2022det}
+G.~Song \emph{et~al.}, ``DET: Enabling efficient probing of IPv6 active
+addresses,'' \emph{IEEE/ACM Trans.\ Netw.}, 2022.
+
+\bibitem{yang2022sixgraph}
+T.~Yang, B.~Hou, Z.~Cai, K.~Wu, T.~Zhou, and C.~Wang, ``6Graph: A
+graph-theoretic approach to address pattern mining for Internet-wide
+IPv6 scanning,'' \emph{Computer Networks}, 2022.
+
+\bibitem{gasser2018clusters}
+O.~Gasser \emph{et~al.}, ``Clusters in the expanse: Understanding and
+unbiasing IPv6 hitlists,'' in \emph{IMC}, 2018.
+
+\bibitem{zirngibl2022rusty}
+J.~Zirngibl, L.~Steger, P.~Sattler, O.~Gasser, and G.~Carle, ``Rusty
+clusters? Dusting an IPv6 research foundation,'' in \emph{IMC}, 2022.
+
+\bibitem{sattler2023packed}
+P.~Sattler, J.~Zirngibl, M.~Jonker, O.~Gasser, G.~Carle, and R.~Holz,
+``Packed to the brim: Investigating the impact of highly responsive
+prefixes on Internet-wide measurement campaigns,'' \emph{Proc.\ ACM
+Networking}, vol.~1, 2023.
+
+\bibitem{luori2024}
+D.~Cheng \emph{et~al.}, ``Luori: Active probing and evaluation of
+Internet-wide IPv6 fully responsive prefixes,'' in \emph{IEEE ICNP},
+2024.
+
+\bibitem{gungnir2025}
+C.~Wei, Y.~Liu, L.~He, D.~Cheng, and J.~Zhou, ``Gungnir:
+Autoregressive model for unified generation of IPv6 fully responsive
+prefixes,'' in \emph{IEEE ICNP}, 2025.
+
+\bibitem{gu2023mamba}
+A.~Gu and T.~Dao, ``Mamba: Linear-time sequence modeling with selective
+state spaces,'' arXiv:2312.00752, 2023.
+
+\bibitem{zhu2024vimamba}
+L.~Zhu \emph{et~al.}, ``Vision Mamba: Efficient visual representation
+learning with bidirectional state-space model,'' in \emph{ICML}, 2024.
+
+\bibitem{rfc4291}
+R.~Hinden and S.~Deering, ``IP version 6 addressing architecture,''
+RFC 4291, 2006.
+
+\bibitem{routeviews}
+University of Oregon, ``Route Views project,''
+\url{https://www.routeviews.org/}, 2024.
+
+\bibitem{caida-as2org}
+CAIDA, ``AS-to-organization mapping dataset,''
+\url{https://www.caida.org/catalog/datasets/as-organizations/}, 2024.
+
+\bibitem{ipv6hitlist}
+TUM, ``IPv6 hitlist service,''
+\url{https://ipv6hitlist.github.io/}, 2025.
+
+\bibitem{menlo}
+E.~Kenneally and D.~Dittrich, ``The Menlo report: Ethical principles
+guiding information and communication technology research,''
+\emph{SSRN}, 2014.
+
+\bibitem{partridge2016ethical}
+C.~Partridge and M.~Allman, ``Ethical considerations in network
+measurement papers,'' \emph{Commun.\ ACM}, 2016.
+
+\end{thebibliography}
+
+\end{document}

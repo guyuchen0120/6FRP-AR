@@ -1,0 +1,1682 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  6FRP: Discovering IPv6 Fully-Responsive Prefixes at Scale via
+%  Dual-Scan Hierarchical State-Space Models with In-Range-Aware Feedback
+%
+%  Target venue : IEEE INFOCOM 2027
+%  Template     : IEEEtran conference (double-column, 10pt)
+%
+%  How to build:
+%      pdflatex 6FRP_infocom2027 && bibtex 6FRP_infocom2027 && \
+%      pdflatex 6FRP_infocom2027 && pdflatex 6FRP_infocom2027
+%
+%  Figures required in the same directory:
+%      frp_count.pdf          address_space.pdf
+%      as_coverage.pdf        country_coverage.pdf
+%      prefix_coverage.pdf    category_coverage.pdf
+%      comparison_curves.pdf  (optional, used for the summary figure)
+%      arch_dualscan.pdf      (system overview — TBD)
+%      seed_overlap.pdf       (raw vs net-new FRPs at 10M budget)
+%      netnew_curve.pdf       (net-new FRPs across budgets)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{siunitx}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+             T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{6FRP: Discovering IPv6 Fully-Responsive Prefixes at Scale via
+       Dual-Scan Hierarchical State-Space Models with In-Range-Aware
+       Feedback}
+
+\author{\IEEEauthorblockN{Anonymous Authors}
+\IEEEauthorblockA{Anonymous Institution\\
+\{anon\}@anon.edu}}
+
+\maketitle
+
+% =============================================================================
+%  Abstract
+% =============================================================================
+\begin{abstract}
+Fully-Responsive Prefixes (FRPs)---IPv6 prefixes whose every address
+replies to probes---are pivotal for scalable Internet-wide measurement,
+target generation and reachability studies, yet the vast 128-bit
+address space renders exhaustive discovery infeasible.  Existing
+generators such as \emph{Luori} and \emph{Gungnir} either exhaust
+the probing budget within a handful of Autonomous Systems (ASes),
+or spend a substantial fraction of that budget re-probing
+candidates \emph{already covered by the known seed set}.  Our
+empirical study shows that $32\%$--$43\%$ of the FRPs confirmed by
+state-of-the-art generators are strict sub-prefixes of the aligned
+public seed set, so the corresponding probes carry no fresh
+information.  We present \textbf{6FRP}, an online FRP-discovery
+framework built on a \emph{Dual-Scan Hierarchical Mamba}
+(DS-HMamba) generator that jointly performs (i) an \emph{outer scan}
+along the 128-bit hierarchy (coarse/medium/fine bit dependencies)
+and (ii) an \emph{inner scan} across same-AS samples, fused by an
+AS-conditioned gate.  A three-stage masked-language-model decoder
+produces candidates that are validated by a ping-style Active
+Probing Detection (APD) module.  Crucially, 6FRP \emph{pre-fixes}
+the known-FRP range at initialization and thereafter only probes
+candidates \emph{outside} it, turning probe budget into net-new
+discovery; the resulting binary labels continually fine-tune
+DS-HMamba.  Under identical probing budgets from 2\,M to 10\,M
+packets on the public IPv6 routing view, 6FRP discovers
+$\mathbf{2.8\times}$ more raw and $\mathbf{3.23\times}$ more
+\emph{net-new} FRPs than Gungnir, covers $\mathbf{5.9\times}$ more
+address space, $\mathbf{3.2\times}$ more ASes and
+$\mathbf{1.76\times}$ more countries, while being
+$\mathbf{1.7\times}$ faster to sample---demonstrating that
+structure-aware sequence modelling combined with in-range-aware
+feedback turns limited probe budgets into markedly wider IPv6
+visibility.
+\end{abstract}
+
+\begin{IEEEkeywords}
+IPv6 measurement, Fully-Responsive Prefix, Address-space discovery,
+Hierarchical state-space model, Mamba, Active probing, Online
+learning.
+\end{IEEEkeywords}
+
+
+% =============================================================================
+%  I.  Introduction
+% =============================================================================
+\section{Introduction}\label{sec:intro}
+
+Internet-wide active scanning underpins modern Internet
+measurement~\cite{durumeric2013zmap,durumeric2013zmap-ext,rye2023ipv6hitlist,foremski2016entropy,pour2020comprehensive}.
+While IPv4 has been mapped in its
+entirety~\cite{durumeric2013zmap,zgrab2}, the $2^{128}$ address space of IPv6
+renders brute-force scanning infeasible and has motivated a rich
+family of Target-Generation Algorithms
+(TGAs)~\cite{song2022det,yang20226forest,hou20216hit,song2020hitlist,zhang20246vision,song20206gcvae,song20216veclm,song20216gan,yang20226graph,liu20166tree,zhou20236tree-ml,liu2018build-hitlist}.
+These TGAs are, however, undermined by a peculiar phenomenon: a
+non-negligible fraction of the addressable space consists of
+\emph{Fully-Responsive Prefixes} (FRPs)---routing prefixes for which
+\emph{every} address responds to
+probes~\cite{gasser2018clusters,zirngibl2022rusty,sattler2023hrp,cheng2024luori,cheng2024seed-selection,plonka2015temporal}.
+FRPs distort measurement conclusions (hitlist inflation, service
+counts, reachability), waste bandwidth and complicate downstream
+analyses~\cite{erdemir2025aliases}.  Discovering them precisely is
+therefore a first-class problem for the community.
+
+Two recent works represent the state of the art.
+\emph{Luori}~\cite{cheng2024luori} casts FRP discovery as a
+reinforcement-learning problem and expands a prefix tree via
+Monte-Carlo Tree Search.  \emph{Gungnir}~\cite{wei2025gungnir}
+introduces a Transformer autoregressive model that unifies multiple
+protocols and applies a granularity-correction post-process.  Both
+methods, however, share three limitations that we systematically
+diagnose in this paper:
+
+\begin{itemize}
+    \item \textbf{L1 -- Redundancy w.r.t.\ the known range.}  Neither
+    method excludes candidates that fall \emph{inside} an already-known
+    FRP range at generation time.  In our large-scale reproduction we
+    observe that under a $10$M probing budget \textbf{$43\%$} of
+    Gungnir's confirmed FRPs are strict sub-prefixes of the aligned
+    public seed set, and \textbf{$32\%$} of Luori's are; the
+    corresponding probes contribute no fresh signal because a
+    sub-prefix of an already-known FRP is fully responsive by
+    definition (\S\ref{sec:redundancy}).
+    \item \textbf{L2 -- Weak intra-AS coupling.}  Transformer decoders
+    treat each prefix in isolation.  Yet FRPs from a single AS heavily
+    share nibble-level patterns (\S\ref{sec:motivation}); ignoring
+    those correlations forces the model to re-discover the same
+    substructures many times.
+    \item \textbf{L3 -- No online feedback.}  Both baselines
+    train once and freeze.  Real deployments observe non-stationary
+    signals (churn, new allocations), and un-adapted generators drift.
+\end{itemize}
+
+\smallskip\noindent\textbf{Our approach: 6FRP.}
+We propose \textbf{6FRP}, an online FRP-discovery framework built
+around three ideas.
+\emph{(i)}~A \textbf{Dual-Scan Hierarchical Mamba} (DS-HMamba)
+generator: an \emph{outer scan} along the 128-bit sequence captures
+the coarse$\rightarrow$medium$\rightarrow$fine bit hierarchy of an
+IPv6 prefix, while an \emph{inner scan}, executed over same-AS
+samples at each bit position, mines the shared nibble structures
+particular to that AS.  An AS-conditioned gate fuses the two scan
+outputs (\S\ref{sec:design:model}).
+\emph{(ii)}~A three-stage masked-language-model (MLM) decoder
+generates candidates coarse-to-fine, with temperature-controlled
+top-$p$ sampling (\S\ref{sec:design:infer}).
+\emph{(iii)}~An \textbf{in-range-aware feedback} loop
+(\S\ref{sec:design:feedback}) pre-fixes the known-FRP set at
+start-up and thereafter probes only candidates \emph{outside}
+that set, turning every probe into net-new information;
+confirmed/rejected labels then fine-tune DS-HMamba on the fly.
+
+\smallskip\noindent\textbf{Contributions.}
+\begin{itemize}
+    \item We are the first, to the best of our knowledge, to
+    quantify the \emph{in-range redundancy} of state-of-the-art FRP
+    generators and to show that Gungnir spends $43\%$ of its confirmed
+    hits (and Luori $32\%$) on candidates strictly inside the aligned
+    seed range (\S\ref{sec:redundancy}).
+    \item We propose DS-HMamba, a dual-scan hierarchical state-space
+    model that jointly exploits the intra-prefix bit hierarchy and
+    the intra-AS sample correlations at $O(L)$ time per layer,
+    strictly cheaper than the $O(L^2)$ self-attention used by
+    Gungnir (\S\ref{sec:design:model}).
+    \item We design a two-level SeedFilter and an in-range-aware
+    online fine-tuning loop that turns wasted probes into productive
+    discovery (\S\ref{sec:design:feedback}).
+    \item Under identical 2\,M--10\,M probing budgets on the
+    public IPv6 routing view, 6FRP outperforms Gungnir by up to
+    \textbf{2.8$\times$} on raw confirmed FRPs and
+    \textbf{3.23$\times$} on net-new confirmed FRPs;
+    \textbf{5.9$\times$} on covered address space; \textbf{3.2$\times$}
+    on ASes and \textbf{1.76$\times$} on countries.  Against Luori
+    the net-new gap is $\mathbf{1.35\times}$ at $10$M and grows
+    monotonically with the budget (\S\ref{sec:eval:perf}).
+\end{itemize}
+
+
+% =============================================================================
+%  II.  Background and Related Work
+% =============================================================================
+\section{Background and Related Work}\label{sec:background}
+
+\subsection{Fully-Responsive Prefixes}
+Murdock \emph{et al.}~\cite{murdock2017tga} first noticed
+the misleading effect of FRPs on address inference, and later
+work on router geolocation~\cite{gharaibeh2017look} and
+temporal address behaviour~\cite{plonka2015temporal} further
+confirmed that FRP-inflated hitlists corrupt downstream analyses.
+\emph{aliased prefixes}: contiguous IPv6 ranges whose addresses reply
+uniformly to probes.  Zirngibl \emph{et
+al.}~\cite{zirngibl2022rusty} refined the definition and adopted the
+term FRP, formally requiring a $100\%$ probe-reply rate across the
+prefix while dropping the single-host assumption.  Sattler
+\emph{et al.}~\cite{sattler2023hrp} report similar
+aliasing-driven inflation, and complementary probing
+toolchains~\cite{vermeulen2020multilevel,vermeulen2020diamond,li2022fast6}
+exhibit the same pathology when hitlists are noisy.
+``highly-responsive'' prefixes in the IPv4 space (\emph{HRPs}), a
+distinct but related phenomenon.  Their operational relevance is now
+well-established: FRPs distort
+hitlists~\cite{gasser2018clusters,steger2023tga}, inflate service
+counts and mask non-legitimate hosts.
+
+\subsection{FRP Probing Methods}
+\label{sec:bg:probing}
+\subsubsection{Aliased-Prefix Detection (APD) and MAPD}
+The seminal APD procedure of Gasser
+\emph{et al.}~\cite{gasser2018clusters} probes $16$ addresses,
+one per nibble, drawn from the sixteen child \texttt{0}--\texttt{f}
+subnets of a candidate prefix; if all $16$ reply the prefix is
+declared aliased.  This ``one-nibble-per-child'' heuristic has since
+been adopted as the de-facto positive test in nearly every
+subsequent FRP study.  Its exhaustive variant,
+MAPD~\cite{gasser2018clusters,zirngibl2022rusty}, enumerates all
+possible parent prefixes down to a chosen granularity (typically
+$\ell{=}64$) and applies APD to each candidate.  MAPD is
+conceptually the ``gold standard'' but its probe cost scales
+exponentially with the announced routing prefix length and is
+therefore infeasible for large-scale, budget-constrained deployments.
+
+\subsubsection{Luori: MCTS-driven exploration}
+\label{sec:bg:luori}
+Luori~\cite{cheng2024luori} was the first to cast FRP discovery
+as a Monte-Carlo Tree Search (MCTS) problem, borrowing the UCB
+strategy from AlphaGo~\cite{silver2016mcts}.
+explicitly as a \emph{sequential decision problem}.  It builds a
+prefix tree rooted at each routing prefix and lets a Monte-Carlo
+Tree Search (MCTS) agent decide, at every internal node, which
+child sub-prefix to expand next; the reward comes from the
+outcome of an APD probe applied at the reached leaf.  A
+Reinforcement-Learning (RL) policy learns to prioritise
+sub-trees rich in FRP density.  Luori's design is elegant but
+inherits three well-documented weaknesses of tree-based RL.
+\emph{(i) Length dependency.}  Every path in the tree must
+be expanded bit-by-bit, so the effective search depth grows
+linearly with prefix length; large announcements (e.g.\ /32)
+exhaust the sampling budget long before the tree is developed.
+\emph{(ii) Local exploitation.}  MCTS concentrates rollouts on
+sub-trees that already contain confirmed FRPs; consequently,
+Luori quickly rediscovers a rich sub-space around the seed and
+then saturates (this behaviour is visible in
+Fig.~\ref{fig:panels}(a), where Luori's raw FRP count flattens
+between $8$M and $10$M).
+\emph{(iii) No cross-AS transfer.}  Trees for different routing
+prefixes do not share statistics, so patterns common to an entire
+AS or business category must be re-learned from scratch every time.
+
+\subsubsection{Gungnir: Transformer autoregression + granularity correction}
+\label{sec:bg:gungnir}
+Gungnir~\cite{wei2025gungnir}, presented at ICNP~2025, is the most
+recent Transformer-based FRP generator.  Its multi-head
+self-attention backbone follows the standard formulation of
+Vaswani \emph{et~al.}~\cite{vaswani2017attention} and the causal
+left-to-right decoding of GPT-2~\cite{radford2019gpt2}.
+recent state-of-the-art.  It reformulates the problem as
+\emph{sequence modelling}: an IPv6 prefix is tokenised bit-by-bit
+into a token sequence together with side tokens for BGP prefix,
+AS, organisation, business category and active-type/port.  A
+Transformer decoder with $N$ stacked
+Multi-Head-Self-Attention (MHSA) blocks then learns the joint
+distribution $P_\theta(w_1,\ldots,w_L\mid\text{ctx})$ under a
+causal cross-entropy loss
+    $\mathcal{L}(\hat{y},y) = -\sum_i y_i\log\hat{y}_i$,
+which the authors show is equivalent to minimising
+$\mathrm{KL}\!\left(P_{\text{data}}\!\parallel\!P_\theta\right)$
+between the true FRP distribution and the model.  At inference
+time, prefix inference generates candidates through a Markov
+chain of conditional probabilities, and \emph{Top-$p$ nucleus
+sampling}~\cite{holtzman2020top-p} controls the
+exploration/exploitation trade-off (best $p=0.6$ per their
+ablation).  After a candidate is confirmed by APD, Gungnir
+performs \emph{granularity correction}: it re-probes the
+candidate under a set of alternative prefix lengths and keeps
+the largest one that still yields $16/16$ replies.
+This step is essential to fight what the authors call the
+\emph{FRP Misleading} effect, where a smaller, deeply-nested
+FRP is reported instead of its actual containing FRP.
+
+While Gungnir substantially improves on Luori in raw coverage
+(Fig.~\ref{fig:panels}(b, c)), we find three structural weaknesses.
+\emph{(i) Redundancy w.r.t.\ the known range.}  Its top-$p$ decoder
+concentrates probability mass on high-density training regions,
+which coincide with the already-known seed set;
+Table~\ref{tab:redundancy}(a) shows that $43\%$ of its confirmed
+FRPs at $10$M are \emph{sub-prefixes} of the aligned public
+seed---the same probes could not have enlarged the frontier.
+\emph{(ii) Quadratic cost.}  MHSA has $O(L^2)$ time and memory
+in the sequence length $L$; for the $L=128$-bit prefix plus
+context tokens ($L\!\approx\!140$--$180$) Gungnir's per-token
+generation cost is 1.7--2.1$\times$ higher than a linear
+scanner (\S\ref{sec:eval:resource}).
+\emph{(iii) Frozen post-training.}  Gungnir is trained once and
+frozen; there is no mechanism to fold newly-confirmed FRPs back
+into the generator, so the same wasted-probe pattern persists
+across the entire probing budget (its redundancy ratio stays at
+$\sim\!43\%$ from $2$M to $10$M in Table~\ref{tab:main_netnew}).
+
+\subsection{Selective State-Space Models}
+\label{sec:bg:mamba}
+Mamba~\cite{gu2023mamba} is a recent \emph{selective} State-Space
+Model (SSM) that reaches Transformer-level accuracy at
+\emph{linear} time and memory complexity in the sequence length.
+Its recurrence is
+\begin{equation}
+h_t = \exp(\Delta_t A)\,h_{t-1} + \Delta_t B_t u_t,
+\quad y_t = C_t^{\top} h_t,
+\label{eq:mamba-ssm}
+\end{equation}
+where the state matrix $A\!\in\!\mathbb{R}^{N\times N}$ is
+diagonal and $(\Delta_t, B_t, C_t)$ are \emph{input-dependent}
+gates that let the model selectively remember or forget along the
+scan axis.  Because $A$ is diagonal and the update is a first-order
+recurrence, the whole sequence can be evaluated by a parallel
+prefix scan in $O(L\log L)$ work and $O(L)$ memory --- an order
+of magnitude cheaper than attention on long sequences.
+Mamba has been successfully applied to language, vision, audio and
+genomics, but --- to our knowledge --- has not yet been used for
+IPv6 measurement.  We argue in \S\ref{sec:design:why-mamba} that
+its linear-in-length cost and selective-recurrence property are a
+strong match for FRP generation.
+
+
+% =============================================================================
+%  III.  Problem Analysis and Motivation
+% =============================================================================
+\section{Problem Analysis and Motivation}\label{sec:motivation}
+
+\subsection{Definitions}
+\label{sec:motivation:def}
+We work with three sets throughout.  Let
+$\mathcal{S}\subset\{0,1\}^{\le128}\times\mathbb{N}$ denote the
+current \emph{seed FRP set} (each entry is a prefix and its
+routing length); let $\mathcal{S}_{0}\supseteq\mathcal{S}$
+denote the \emph{aligned public seed set} obtained by unioning
+$\mathcal{S}$ with third-party FRP releases and the APD-derived
+aggregations described in \S\ref{sec:eval:setup}.  Given a
+probing budget $B$ (in packets), $\mathcal{C}_\theta$ is the set
+of candidate prefixes generated by algorithm $\theta$ and
+$\mathcal{F}_\theta\!\subseteq\!\mathcal{C}_\theta$ the subset
+whose APD test succeeds.  Because a probe that lands
+\emph{inside} an already-known FRP $s\!\in\!\mathcal{S}_{0}$ can
+only re-confirm what is known, we measure discovery quality by
+the \emph{net-new coverage}
+\begin{equation}
+\mathrm{NN}(\theta) \;=\;
+\big|\{c\in\mathcal{F}_\theta \,:\, \nexists\,s\in\mathcal{S}_{0},\;
+   c\preceq s\}\big|,
+\label{eq:netnew}
+\end{equation}
+where $c\preceq s$ means $c$ is a (non-strict) sub-prefix of $s$.
+The corresponding \emph{redundancy ratio} of $\theta$ is
+$\rho(\theta)\!=\!1-\mathrm{NN}(\theta)/|\mathcal{F}_\theta|$;
+$\rho$ close to zero means every probe contributes new
+information, while $\rho$ close to one means the generator merely
+re-discovers what the community has already published.
+Section~\ref{sec:redundancy} shows that state-of-the-art
+generators sit at $\rho\!\approx\!0.32\!-\!0.43$.
+
+\subsection{Motivating Observation \#1: Wasted Probes}
+Under a probe budget of $10$M packets Gungnir confirms $1{,}675$
+FRPs, but a full sub-prefix check against $\mathcal{S}_{0}$
+reveals that only $954$ of them are genuinely
+\emph{net-new}, i.e.\ satisfy the predicate of
+Eq.~(\ref{eq:netnew}); the remaining $721$ ($43.0\%$) fall inside
+a known FRP $s\!\in\!\mathcal{S}_{0}$.  Luori exhibits a milder
+but still material redundancy of $31.9\%$.  The corresponding
+raw-vs-net-new comparison is plotted in
+Fig.~\ref{fig:seed_overlap} and dissected in
+\S\ref{sec:redundancy}.  Two observations drive our design:
+\emph{(a)}~probing a sub-prefix of a known FRP is
+\emph{information-free}: since $s$ is fully responsive by
+definition, so is every $c\preceq s$; probing $c$ merely
+consumes budget.
+\emph{(b)}~The public seed set $\mathcal{S}_{0}$ is available
+\emph{before} probing starts; any generator that pre-loads it
+can transform the sub-prefix test into a $O(\log|\mathcal{S}_{0}|)$
+lookup and refuse to spend probes on redundant candidates.
+6FRP builds this lookup into a two-level SeedFilter
+(\S\ref{sec:design:feedback}) so that every issued probe is
+guaranteed to land outside $\mathcal{S}_{0}$.
+
+\subsection{Motivating Observation \#2: Intra-AS Regularity}
+\label{sec:motivation:entropy}
+The second driver of our design is a structural property of the
+FRP distribution itself.  Following the pattern-entropy analysis
+of Wei \emph{et al.}~\cite{wei2025gungnir}, we quantify the
+information lost by such coarse cross-entropy losses using the
+$I$-divergence framework of Csisz\'ar~\cite{csiszar1975idivergence}
+and the decoupled KL formulation of Cui \emph{et
+al.}~\cite{cui2023decoupled}.
+regularity of the FRP pattern by
+$H_{\mathrm{pattern}}(\mathcal{S})
+   =-\!\sum_x P(x)\log P(x)$,
+where $P(x)$ is the empirical frequency of pattern $x$ over the
+first $\ell$ bits.  The maximum $\ell$ is attained by a random,
+uniform distribution.  Fig.~\ref{fig:entropy} plots
+$H_{\mathrm{pattern}}$ for the seed set aggregated
+\emph{globally} and then \emph{partitioned} by business category,
+sub-category, organisation and AS.  Three observations follow.
+\emph{(i)}~All observed entropies sit far below the theoretical
+upper bound (dashed line): the FRP pattern space is strongly
+structured, not random.
+\emph{(ii)}~The gap widens monotonically from the global curve
+to the AS-partitioned curve; in other words, \emph{conditioning
+on the AS collapses the pattern space}.  For $\ell{=}20$ the
+entropy drops from $\sim\!12.5$ (global) to $\sim\!5.2$ (top-1 AS),
+a $2.4\times$ compression.
+\emph{(iii)}~The intra-AS residual entropy is still non-trivial,
+meaning that a model \emph{must} exploit the AS conditioning to
+be efficient, but is not allowed to collapse to a single
+per-AS template.
+
+Two direct consequences for the model design follow.
+First, a generator that models each prefix in \emph{isolation}
+(as Gungnir's Transformer does) must re-derive the intra-AS
+substructure from scratch for every prefix it emits; the
+$O(L^2)$ attention cost is spent re-discovering an axis that
+is already exposed by the AS label.  Second, the strong
+intra-AS regularity motivates a \emph{second} scan axis
+--- one that runs across same-AS samples rather than along the
+bits of a single prefix --- so that shared nibble structures are
+learned once and reused.  This is precisely the role of the
+\emph{inner scan} we introduce in
+\S\ref{sec:design:model}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{entropy.pdf}
+\caption{Pattern entropy $H_{\mathrm{pattern}}(\mathcal{S})$
+of the seed FRP set as a function of the pattern length $\ell$.
+The dashed line marks the theoretical upper bound of a uniformly
+random distribution.  Partitioning the seed set by business
+category, sub-category, organisation and AS pushes the observed
+entropy progressively below the bound, revealing strong
+\emph{intra-AS} regularity that 6FRP exploits through an inner
+Mamba scan (\S\ref{sec:design:model}).}
+\label{fig:entropy}
+\end{figure}
+
+\subsection{Objective}
+Combining the two observations, we formalise 6FRP's design
+objective as
+\begin{equation}
+\max_{\theta}\; \mathrm{NN}(\theta) \;\;
+\text{s.t.}\;\; |\mathcal{C}_\theta|\!\le\!B/16,\;\;
+c\not\preceq s\;\forall\,c\!\in\!\mathcal{C}_\theta,\,
+s\!\in\!\mathcal{S}_{0},
+\label{eq:obj}
+\end{equation}
+i.e.\ maximise net-new coverage subject to a probing budget
+and the in-range exclusion constraint.  The next section
+describes an architecture that fulfils both constraints
+efficiently.
+
+
+% =============================================================================
+%  IV.  Design of 6FRP
+% =============================================================================
+\section{Design of 6FRP}\label{sec:design}
+
+\subsection{Overview}\label{sec:design:overview}
+Fig.~\ref{fig:arch} shows the five modules of 6FRP:
+\emph{(a)}~a \textbf{DS-HMamba} generator that produces candidate
+prefixes, composed of an outer scan along the 128-bit axis and
+an inner scan along the same-AS axis, fused by an
+AS-conditioned gate;
+\emph{(b)}~a three-stage \textbf{MLM decoder} that emits a
+concrete candidate $c$ by sampling coarse, medium and fine bit
+groups sequentially;
+\emph{(c)}~a two-level \textbf{SeedFilter} that removes
+duplicates ($c\!\in\!\mathcal{F}$) and in-range candidates
+($c\!\prec\!s$ for some $s\!\in\!\mathcal{F}$) \emph{before}
+probing;
+\emph{(d)}~a \textbf{ping-style APD probing module} that
+issues 16 probes per surviving candidate with a bounded retry
+budget; and
+\emph{(e)}~an \textbf{online fine-tuning loop} that consumes
+APD labels to refresh DS-HMamba every
+$\{0.5,2.5,4.5,6.5\}$\,M probes.  The loop repeats until the
+total probing budget $B$ is exhausted.
+
+The system is deliberately organised as a
+\emph{feedback control loop}: (a)$\to$(b)$\to$(c) generates
+and filters candidates, (d) measures the environment, and (e)
+closes the loop by refreshing the generator with the fresh
+labels.  Compared to Luori (open-loop MCTS) and Gungnir
+(open-loop autoregression), this is the first FRP architecture
+whose generator is \emph{reactively adapted} to the observed
+outcomes.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.96\linewidth]{arch_dualscan.pdf}
+\caption{Architecture of 6FRP.  The DS-HMamba generator
+(a) fuses an outer bit-axis scan with an inner same-AS scan
+under AS-conditioned gating; the three-stage MLM decoder (b)
+emits a candidate $c$; the two-level SeedFilter (c) discards
+duplicates and in-range candidates before probing; the ping-style
+APD module (d) issues 16 probes per surviving candidate; and
+the online fine-tuning loop (e) refreshes DS-HMamba with the
+fresh labels every $\{0.5,2.5,4.5,6.5\}$\,M probes.  The red
+dashed path realises the \emph{in-range-aware feedback} that
+distinguishes 6FRP from Luori and Gungnir.}
+\label{fig:arch}
+\end{figure*}
+
+\subsection{Why a Selective State-Space Model?}
+\label{sec:design:why-mamba}
+Before diving into the module design, we motivate our choice
+of architecture.  A good FRP generator must satisfy four
+requirements dictated by the FRP structure itself:
+
+\begin{enumerate}
+   \item[\textbf{R1}] \emph{Long-range bit dependencies.}  An
+   IPv6 prefix is a length-$L{=}128$ sequence in which the
+   coarse bits (routing prefix, RIR block, allocation
+   granularity) constrain the plausible medium and fine
+bits~\cite{hinden2006rfc4291,deering1998ipv6}.  The generator must therefore
+   model dependencies that span the full $128$-bit horizon.
+
+   \item[\textbf{R2}] \emph{Linear cost at inference.}
+   A $10$M probing budget corresponds to
+   $\sim\!625$K candidate generations; multiplying by an
+   $O(L^2)$ attention cost incurs
+   $\sim\!10^{10}$ operations per snapshot, which
+Table~\ref{tab:ablation_resource}(b) shows is the main bottleneck of
+   Gungnir on a single RTX~4090.  A linear-in-$L$
+   generator saves an order of magnitude.
+
+   \item[\textbf{R3}] \emph{Input-selective memory.}
+   As Fig.~\ref{fig:entropy} shows, the effective FRP alphabet
+   depends heavily on the AS: for some ASes the first eight
+   nibbles are essentially deterministic (near-zero entropy),
+   for others the fine bits carry most of the information.
+   The generator must \emph{selectively} remember or forget
+   along the scan axis depending on the input tokens.
+
+   \item[\textbf{R4}] \emph{A second scan axis.}
+   Since intra-AS samples share nibble structures
+   (\S\ref{sec:motivation:entropy}), the generator should be
+   composable along a second axis --- one that runs across
+   different prefixes of the same AS --- without a quadratic
+   blow-up.
+\end{enumerate}
+
+None of the mainstream sequence architectures satisfies all
+four simultaneously.  LSTM/GRU~\cite{gu2023mamba,medsker2001rnn} are linear
+in $L$ (R2) but have no input-dependent gating (fail R3) and
+struggle with long contexts (weak on R1).  Transformer decoders
+(the choice of Gungnir) address R1 and R3 through attention
+but incur $O(L^2)$ per layer (fail R2), and their
+attention grid is not naturally composable along a second axis
+without a $O((|\mathcal{A}|L)^2)$ tensor (fail R4).
+Selective State-Space Models (Mamba~\cite{gu2023mamba,gu2021s4})
+uniquely satisfy all four: the recurrence in
+Eq.~(\ref{eq:mamba-ssm}) is $O(L)$ per layer (R2); the
+input-dependent gates $(\Delta_t,B_t,C_t)$ realise selective
+memory (R3); the diagonal state matrix admits an efficient
+parallel scan that generalises to a second (AS) axis by simply
+running the scan along that axis (R4); and empirically Mamba
+matches attention on retrieval-style tasks up to
+$L\!=\!16$k tokens (R1).  This is the reason we adopt Mamba
+as the backbone and compose two orthogonal scans on top of it.
+
+\subsection{Dual-Scan Hierarchical Mamba (DS-HMamba)}
+\label{sec:design:model}
+
+\subsubsection{Bit-hierarchy embedding.}
+An IPv6 prefix is a length-$L$ binary string
+$b_{1:L}\!\in\!\{0,1\}^{L}$.  Motivated by
+RFC~4291~\cite{hinden2006rfc4291}, we split the bit positions
+into three semantic layers
+\emph{coarse} $\mathcal{L}_c\!=\![1,\ell_c]$
+(routing prefix + RIR block, typically $\ell_c\!=\!32$),
+\emph{medium} $\mathcal{L}_m\!=\![\ell_c\!+\!1,\ell_m]$
+(subnet allocation granularity, $\ell_m\!\approx\!48\text{--}64$),
+and \emph{fine} $\mathcal{L}_f\!=\![\ell_m\!+\!1,L]$
+(interface identifier / suffix).  A learned bit-embedding
+lifts $b_i$ to $x_i\!\in\!\mathbb{R}^{d}$ and each token receives
+an additive layer embedding
+$e_s\!\in\!\{e_c,e_m,e_f\}$ so that the model can distinguish
+coarse-medium-fine positions.
+
+\subsubsection{Outer scan (bit axis).}
+The outer scan is a stack of $N_o$ Mamba blocks operating on
+the bit sequence $x_{1:L}$.  Each block executes the
+selective SSM update of Eq.~(\ref{eq:mamba-ssm}), interleaved
+with a gated-Conv1D of width $4$ and a residual FFN, closely
+following the original Mamba block.  The output is a
+length-$L$ context tensor
+$y^{\text{outer}}\!\in\!\mathbb{R}^{L\times d}$.
+The outer scan captures the
+\emph{coarse$\rightarrow$medium$\rightarrow$fine} hierarchy
+of an IPv6 prefix (R1) at $O(L)$ cost per block (R2), and its
+input-dependent $\Delta_t$ realises the ``skip trivial bits''
+behaviour that R3 requires.
+
+\subsubsection{Inner scan (same-AS axis).}
+For each bit position $\ell\!\in\![1,L]$ we gather the
+$\ell$-th feature of every same-AS prefix in the current batch
+$\mathcal{B}_{\mathcal{A}}$, forming a
+$|\mathcal{B}_{\mathcal{A}}|\!\times\!d$ sequence per AS
+$\mathcal{A}$.  A second stack of $N_i$ Mamba blocks scans
+along this axis, producing an AS-local representation
+$y^{\text{inner}}_{\ell}\!\in\!\mathbb{R}^{d}$ for every
+position.  The inner scan is our chief architectural
+difference from Gungnir: it captures shared nibble structures
+across prefixes of the same AS without incurring the
+$O((|\mathcal{B}_{\mathcal{A}}|L)^2)$ cost of a joint attention
+matrix.  Crucially, running Mamba along the second axis
+requires \emph{no code change}, because the SSM recurrence
+of Eq.~(\ref{eq:mamba-ssm}) is axis-agnostic (R4).
+
+\subsubsection{AS-conditioned gating fusion.}
+An AS-embedding $e_{\mathcal{A}}\!\in\!\mathbb{R}^{d}$
+conditions a soft gate that fuses the two scans position-wise,
+\begin{equation}
+g_{\ell} \;=\; \mathrm{softmax}\!\bigl(W_g[e_{\mathcal{A}};
+   y^{\text{outer}}_{\ell};y^{\text{inner}}_{\ell}]\bigr)
+\!\in\!\mathbb{R}^{2},\quad
+z_{\ell} \;=\; g_{\ell,1}\,y^{\text{outer}}_{\ell}
+             + g_{\ell,2}\,y^{\text{inner}}_{\ell}.
+\label{eq:gate}
+\end{equation}
+The gate concentrates on the outer scan for well-populated
+ASes whose bit-hierarchy already carries most of the signal,
+and on the inner scan for ASes with rich intra-set regularity
+(the low-entropy tail of Fig.~\ref{fig:entropy}).  This
+input-selective mixing generalises the router of a
+mixture-of-experts and is the second place where R3 is
+exercised.
+
+\subsubsection{Three-stage MLM training objective.}
+Following the coarse-to-fine hierarchy of the bit layers, we
+train DS-HMamba with a three-stage masked-language-model loss
+in the spirit of BERT~\cite{devlin2019bert}, but restricted to
+the three semantic bit groups $\{c,m,f\}$ of an IPv6 address.
+At each step one of $\{c,m,f\}$ is chosen uniformly and the
+corresponding bit positions are masked; the model is asked to
+reconstruct the masked bits conditioned on the unmasked bits
+and the context tokens.  The total loss is
+\begin{equation}
+\mathcal{L}_{\mathrm{MLM}}
+= -\!\!\sum_{s\in\{c,m,f\}}\!\!
+   \mathbb{E}_{\mathcal{L}_s}\!\!\sum_{i\in\mathcal{L}_s}\!
+   \log P_\theta\!\left(b_i \,\big|\,
+      b_{\setminus \mathcal{L}_s},\,\text{ctx}\right).
+\label{eq:mlm}
+\end{equation}
+Two properties of Eq.~(\ref{eq:mlm}) matter.
+\emph{(i)}~Unlike Gungnir's causal cross-entropy, the MLM
+formulation is \emph{bidirectional}: when reconstructing a
+fine bit the model can attend to any coarse bit and vice
+versa.  This is essential because FRP patterns are not
+inherently left-to-right (a $/64$ FRP is completely determined
+by its coarse and medium bits, and the fine bits are
+arbitrary).
+\emph{(ii)}~Sampling the layer to mask is uniform, so the
+model receives a balanced gradient signal for coarse, medium
+and fine positions --- avoiding the ``coarse-bit collapse''
+we observed in an early causal variant.
+
+\subsection{Three-Stage Coarse-to-Fine Inference}
+\label{sec:design:infer}
+At inference time we invert the MLM training curriculum.
+Given a target routing prefix and its context tokens
+(AS, organisation, business category, protocol), the decoder
+generates a candidate in three passes.
+\emph{Stage 1.}  All bits in $\mathcal{L}_m$ and
+$\mathcal{L}_f$ are masked; we sample the coarse bits
+$b_{\mathcal{L}_c}$ from
+$P_\theta\!\left(\mathcal{L}_c\mid\text{ctx}\right)$ using
+nucleus (Top-$p$) sampling~\cite{holtzman2020top-p} with
+temperature $\tau\!=\!1$ and $p\!=\!0.6$.
+\emph{Stage 2.}  Coarse bits are fixed and the medium bits
+$b_{\mathcal{L}_m}$ are sampled from
+$P_\theta\!\left(\mathcal{L}_m \mid b_{\mathcal{L}_c},
+\text{ctx}\right)$, again with $p\!=\!0.6$.
+\emph{Stage 3.}  Coarse and medium bits are fixed and the fine
+bits $b_{\mathcal{L}_f}$ are sampled with $p\!=\!0.4$ (a
+slightly tighter nucleus to avoid explosive branching in the
+fine layer).
+The value $p\!=\!0.6$ for the first two stages coincides with
+the optimum reported by \cite{wei2025gungnir}, and we confirm
+empirically that it also aligns with the trustworthiness
+criterion for generative sampling of Gao and
+Sun~\cite{gao2024trustworthy}.
+
+\subsection{Two-Level SeedFilter and In-Range-Aware Feedback}
+\label{sec:design:feedback}
+\subsubsection{Data structure.}
+The seed FRP set $\mathcal{S}_{0}$ is loaded once at start-up
+into a Patricia trie keyed by the routing prefix; each trie
+node stores the routing length so that the sub-prefix test
+$c\!\prec\!s$ is answered in $O(\ell(c))$ time.  For a $128$-bit
+prefix and a seed set of $\sim\!3{,}000$ entries the lookup takes
+$\sim\!2\,\mu$s on a single core, i.e.\ four orders of magnitude
+cheaper than an APD probe round-trip.  The trie is thread-safe
+and shared by all worker processes.
+
+\subsubsection{Filter chain.}
+For every candidate $c$ emitted by DS-HMamba we apply three
+filters in order:
+\begin{itemize}
+   \item \textbf{L1 (exact duplicate).}  If $\exists s\in
+   \mathcal{F}: c\!=\!s$, drop $c$ silently.  Such candidates
+   carry no fresh signal and should not be treated as
+   negatives either.
+   \item \textbf{L2 (strict sub-prefix).}  Else if $\exists s\in
+   \mathcal{F}: c\!\prec\!s$, drop $c$ silently.  Probing $c$
+   would only re-confirm known coverage; treating it as a
+   negative would bias the generator away from a legitimately
+   FRP-dense region.
+   \item \textbf{L3 (out-of-range).}  Otherwise $c$ is dispatched
+   to the APD module.
+\end{itemize}
+The filter is \emph{gradient-free}: rejected candidates do not
+contribute to $\mathcal{L}_{\mathrm{MLM}}$ during online
+fine-tuning, so the generator is not perturbed by artificial
+negative examples.
+
+\subsubsection{Ping-style APD.}
+Ordinary APD probes $16$ addresses in a single burst; if any
+probe times out, the candidate is discarded even when the
+remaining $15$ addresses reply.  We observed that transient
+loss (typical rate $1\!-\!3\%$ in our environment) inflates the
+false-negative rate to $\sim\!7\%$, causing the generator to
+be trained against corrupted labels.  We therefore use a
+\emph{ping-style APD} that issues up to $r_{\max}\!=\!5$
+retries per sub-address, spaced by $200$\,ms, and declares a
+positive as soon as all $16$ sub-addresses have replied at
+least once.  This reduces the false-negative rate to
+$\sim\!0.6\%$ at the price of a $\le\!1.2\times$ probe overhead
+in the worst case.
+
+\subsubsection{Online fine-tuning.}
+Positive candidates are added to $\mathcal{F}$ and appended to
+a fine-tuning positive buffer $\mathcal{P}$; negatives are
+appended to a negative buffer $\mathcal{N}$.  DS-HMamba is
+fine-tuned online whenever the cumulative probe count crosses
+a snapshot threshold in $\{0.5,2.5,4.5,6.5\}$\,M.  Each
+snapshot performs one gradient step of a batch of $16$ samples
+drawn i.i.d.\ from $\mathcal{P}\!\cup\!\mathcal{N}$ (balanced
+sampling with weight ratio $1{:}1$).  The learning rate is
+$10^{-5}$, i.e.\ two orders of magnitude smaller than the
+pre-training rate, to protect the model from catastrophic
+forgetting.  We further clip the gradient norm at $1.0$ and
+disable dropout at inference.  This chunked back-propagation
+was necessary to fit the fine-tune step in the $24$\,GB memory
+of an RTX~4090 --- an issue we hit early in development when a
+naive full-batch update triggered OOM.
+
+Algorithm~\ref{alg:loop} summarises the full loop.  Line~4
+enforces R1--L1, Line~5 enforces the sub-prefix exclusion
+$c\!\not\preceq\!s$ of Eq.~(\ref{eq:obj}), and Line~11 realises
+the in-range-aware feedback that closes the control loop.
+
+\begin{algorithm}[t]
+\caption{Online FRP discovery with in-range-aware feedback}
+\label{alg:loop}
+\begin{algorithmic}[1]
+\Require pretrained $\theta_0$, seed set $\mathcal{S}$, budget $B$
+\State $\mathcal{F}\gets\mathcal{S}$, \; $b\gets 0$
+\While{$b < B$}
+   \State $\mathcal{C}\gets\textsc{DS-HMamba}(\theta;\text{ctx})$
+       \Comment{generate candidates}
+   \State $\mathcal{C}_1\gets\{c\in\mathcal{C} \mid c\notin\mathcal{F}\}$
+       \Comment{L1 filter}
+   \State $\mathcal{C}_2\gets\{c\in\mathcal{C}_1 \mid
+       \nexists s\in\mathcal{F},\;c\prec s\}$
+       \Comment{L2 filter}
+   \ForAll{$c\in\mathcal{C}_2$}
+        \State $r\gets\textsc{APD-Ping}(c,16)$
+        \State $b\gets b+16$
+        \If{$r=\text{FRP}$}
+            \State $\mathcal{F}\gets\mathcal{F}\cup\{c\}$
+        \EndIf
+   \EndFor
+   \State \textsc{FineTune}$(\theta;\,\mathcal{C}_2, r)$
+\EndWhile
+\State \Return $\mathcal{F}$
+\end{algorithmic}
+\end{algorithm}
+
+
+% =============================================================================
+%  V.  Redundancy Analysis of Existing Generators
+% =============================================================================
+\section{Redundancy Analysis of Existing Generators}
+\label{sec:redundancy}
+
+We now empirically quantify limitation \textbf{L1} identified in
+\S\ref{sec:intro}.  Let $\mathcal{S}_{0}$ denote the public seed FRP
+set filtered by our alignment pipeline.  For every FRP $c$
+\emph{confirmed} by an algorithm we test whether
+$c\preceq s$ for some $s\in\mathcal{S}_{0}$; if so we count it as
+\emph{in-range} and remove it from the net-new pool.  We sweep the
+probe budget over $B\in\{2,4,6,8,10\}$ million packets and repeat
+the analysis for all three generators (6FRP, Gungnir, Luori) using
+an identical training seed, an identical probing pipeline and an
+identical alignment $\mathcal{S}_{0}$.
+
+\paragraph{Result -- redundancy at the target budget.}  As
+Table~\ref{tab:redundancy}(a) and Fig.~\ref{fig:seed_overlap}
+report, at the $10$M-packet budget $43.0\%$ of Gungnir's
+confirmed FRPs are in-range: out of the $1{,}675$ raw hits only
+$954$ enlarge the map of the known FRP universe.  For Luori the
+in-range fraction is $31.9\%$ ($2{,}289$ net-new out of $3{,}362$),
+and for 6FRP $34.6\%$ ($3{,}084$ net-new out of $4{,}717$).  In
+absolute terms 6FRP delivers $3.23\times$ more net-new FRPs than
+Gungnir and $1.35\times$ more than Luori.
+The residual $34.6\%$ overlap of 6FRP is explained by seed
+heterogeneity: the alignment pipeline that produces
+$\mathcal{S}_{0}$ ingests not only the seed hitlist that 6FRP is
+trained on, but also APD-derived aggregations and third-party FRP
+lists released after our training cut-off; the L2 filter cannot
+suppress the intersection with sources it has never seen.  With
+respect to the training seed hitlist itself, the L2 filter
+guarantees $0\%$ in-range candidates by construction.
+
+\paragraph{Result -- how net-new grows with the budget.}  The
+distinctive property of 6FRP is not its ratio but its
+\emph{trajectory} (Table~\ref{tab:redundancy}(b) and
+Fig.~\ref{fig:netnew_curve}).  Gungnir and Luori both exhibit
+diminishing returns: Gungnir grows almost linearly but from a very
+low base ($201\!\to\!954$), while Luori saturates once its
+seed-driven expansion is exhausted ($1{,}152\!\to\!2{,}289$, with
+essentially no growth between $8$M and $10$M).  6FRP starts
+\emph{below} Gungnir at $B\!=\!2$M ($165$ vs.\ $201$), matches
+Luori at $B\!=\!8$M ($2{,}137$ vs.\ $2{,}152$), and by $B\!=\!10$M
+is $3.23\times$ Gungnir and $1.35\times$ Luori.  This super-linear
+regime is exactly what the in-range-aware feedback loop is
+designed to produce: as more FRPs are confirmed and folded into
+$\mathcal{K}_t$, the L2 filter carves out an increasing amount of
+already-covered space, and the online fine-tuning step
+concentrates the generator's mass on the still-unexplored
+complement.  Neither Gungnir (frozen after pre-training) nor Luori
+(driven by static MCTS over the seed set) can exploit this
+feedback.
+
+\begin{table*}[t]
+\centering
+\caption{Redundancy of the three generators against the aligned
+public seed set $\mathcal{S}_{0}$.  \emph{Raw} counts confirmed
+FRPs; \emph{In-range} counts those covered by $\mathcal{S}_{0}$;
+\emph{Net-new} $=$ \emph{Raw} $-$ \emph{In-range}.  (a) snapshot
+at the target $10$M budget.  (b) net-new FRPs as a function of
+the probing budget; 6FRP's growth is super-linear while Gungnir
+and Luori saturate.  Data collected on the RouteViews
+view~\cite{routeviews} on the same day.}
+\label{tab:redundancy}
+\vspace{2pt}
+\small
+\begin{minipage}{0.44\linewidth}
+\centering
+(a) $10$M snapshot\\[2pt]
+\begin{tabular}{lccc}
+\toprule
+Method & Raw & In-range & \textbf{Net-new}\\
+\midrule
+Gungnir~\cite{wei2025gungnir} & $1{,}675$ & $43.04\%$ & $954$\\
+Luori~\cite{cheng2024luori}   & $3{,}362$ & $31.92\%$ & $2{,}289$\\
+\textbf{6FRP (Ours)}          & $\mathbf{4{,}717}$ & $\mathbf{34.62\%}$ & $\mathbf{3{,}084}$\\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\hfill
+\begin{minipage}{0.54\linewidth}
+\centering
+(b) Net-new FRPs across budgets\\[2pt]
+\begin{tabular}{lccccc}
+\toprule
+Method & $2$M & $4$M & $6$M & $8$M & $10$M\\
+\midrule
+Gungnir & $201$ & $399$ & $614$ & $797$ & $954$\\
+Luori   & $1{,}152$ & $1{,}518$ & $1{,}995$ & $2{,}152$ & $2{,}289$\\
+\textbf{6FRP (Ours)} & $165$ & $\mathbf{658}$ & $\mathbf{1{,}320}$ & $\mathbf{2{,}137}$ & $\mathbf{3{,}084}$\\
+\midrule
+6FRP/Gungnir & $0.82\!\times$ & $1.65\!\times$ & $2.15\!\times$ & $2.68\!\times$ & $\mathbf{3.23\!\times}$\\
+6FRP/Luori   & $0.14\!\times$ & $0.43\!\times$ & $0.66\!\times$ & $0.99\!\times$ & $\mathbf{1.35\!\times}$\\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table*}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{seed_overlap.pdf}
+\caption{Raw vs.\ net-new FRPs at the $10$M-packet budget.
+Darker bars are FRPs whose prefixes are \emph{not} covered by
+the aligned seed set $\mathcal{S}_{0}$.  Although 6FRP still
+shares a $34.6\%$ overlap with $\mathcal{S}_{0}$ (due to seed
+lists released after its training cut-off), it delivers $3{,}084$
+net-new FRPs against Gungnir's $954$ --- a $3.23\times$
+improvement, and $1.35\times$ that of Luori.}
+\label{fig:seed_overlap}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{netnew_curve.pdf}
+\caption{Net-new FRPs as a function of the probing budget.
+Gungnir grows almost linearly from a very low base; Luori
+saturates around $8$M; 6FRP's in-range-aware feedback loop
+produces a super-linear trajectory that overtakes both baselines
+by $B\!\ge\!10$M.}
+\label{fig:netnew_curve}
+\end{figure}
+
+
+% =============================================================================
+%  VI.  Evaluation
+% =============================================================================
+\section{Evaluation}\label{sec:eval}
+
+\subsection{Experimental Setting}\label{sec:eval:setup}
+
+\subsubsection{Dataset}  We use the same $227{,}894$ IPv6 BGP
+routing prefixes from
+RouteViews~\cite{routeviews} used
+by~\cite{wei2025gungnir}, and take Luori's public
+FRP set~\cite{cheng2024luori} as the initial seed set
+$\mathcal{S}_0$ ($182{,}942$ ICMPv6 FRPs over $4{,}643$
+routing prefixes).
+
+\subsubsection{Hyper-parameters}
+DS-HMamba uses 6 layers, hidden dim $d=128$, state dim $N=16$
+and Conv-1D width 4.  Pre-training runs for 50 epochs with
+Adam ($\text{lr}=10^{-3}$, batch 512).  Online fine-tuning is
+mini-batched at size 16 with 1 gradient step per snapshot to
+avoid the OOM issue we experienced early in development.
+APD uses $16$ probe addresses/prefix (one per nibble), max
+$5$ attempts, timeout $2\,\text{s}$.
+
+\subsubsection{Baselines}
+\emph{Luori}~\cite{cheng2024luori} (MCTS-RL) and
+\emph{Gungnir}~\cite{wei2025gungnir} (Transformer AR), both run
+with authors' released code and identical hyper-parameters
+except probing budget.
+
+\subsubsection{Probing Budget Grid}
+Following Gungnir's setup we sweep the total probe budget
+$B_{\text{total}}\!\in\!\{2\text{M},4\text{M},6\text{M},
+8\text{M},10\text{M}\}$ packets.  All methods observe the
+same grid.
+
+\subsubsection{Metrics}
+$|\mathcal{F}|$ (confirmed FRPs),
+\textsc{CovSpace} (covered address space,
+$\sum_{f\in\mathcal{F}}2^{128-\ell(f)}$),
+\textsc{CovAS} (unique origin ASes),
+\textsc{CovRouting} (unique BGP prefixes),
+\textsc{CovCountry}, \textsc{CovCat}.
+
+\subsection{Overall Performance}\label{sec:eval:perf}
+
+Table~\ref{tab:main} reports the \emph{raw} performance grid;
+Table~\ref{tab:main_netnew} reports the same experiment
+restricted to FRPs that are \emph{not} covered by the aligned
+seed set $\mathcal{S}_{0}$ --- i.e., discoveries that materially
+enlarge the known FRP universe.  Fig.~\ref{fig:panels}
+visualises the raw view and Fig.~\ref{fig:panels_netnew} the
+net-new view.  Key findings:
+\begin{itemize}
+   \item \textbf{FRP count (raw).}  6FRP dominates uniformly, with
+   a $2.8\!-\!6.5\times$ advantage over Gungnir and a
+   $1.3\!-\!1.4\times$ advantage over Luori
+   (Fig.~\ref{fig:panels}\,a; Table~\ref{tab:main}, row~$|\mathcal{F}|$).
+   \item \textbf{FRP count (net-new).}  The picture becomes more
+   dramatic once seed overlap is removed
+   (Fig.~\ref{fig:panels_netnew}\,a).  Gungnir plateaus below
+   $10^{3}$ across all budgets ($201\!\to\!954$), Luori saturates
+   at $\sim\!2{,}300$ once its MCTS exhausts the seed set, and
+   only 6FRP shows super-linear growth
+   ($165\!\to\!3{,}084$, $\times 18.7$ from $2$M to $10$M
+   vs.\ $\times 4.7$ for Gungnir and $\times 2.0$ for Luori;
+   Table~\ref{tab:main_netnew}).  At the $10$M budget 6FRP
+   contributes $3{,}084$ genuinely new FRPs, i.e.\ $3.23\times$
+   more than Gungnir and $1.35\times$ more than Luori.
+   \item \textbf{Covered address space.}  On the log scale of
+   Fig.~\ref{fig:panels}\,b, 6FRP sits $1$--$2$ orders of
+   magnitude above both baselines.  At $10\text{M}$,
+   6FRP covers $2.04\!\times\!10^{32}$ addresses vs.\
+   $3.46\!\times\!10^{31}$ for Gungnir---a $5.9\times$ raw gain.
+   In net-new terms the gap widens further to $\times 20$
+   ($7.5\!\times\!10^{31}$ vs.\ $3.7\!\times\!10^{30}$;
+   Table~\ref{tab:main_netnew}, row \textsc{CovSpace}).
+   \item \textbf{Topological breadth.}  6FRP touches
+   $314$ ASes and $44$ countries at $10\text{M}$ (raw), vs.\
+   Gungnir's $97$/$25$ and Luori's $7$/$2$
+   (Fig.~\ref{fig:panels}\,d,e).  Among net-new discoveries the
+   advantage is $230$/$41$ ASes/countries vs.\ Gungnir's
+   $49$/$19$ and Luori's $4$/$2$.
+   \item \textbf{Redundancy trajectory.}  The parenthesised row
+   of Table~\ref{tab:main_netnew} tracks the in-range fraction
+   of $|\mathcal{F}|$.  6FRP is very redundant early
+   ($93\%$ at $2$M, because the model still mimics the seed
+   distribution) but becomes progressively less redundant as
+   the in-range-aware feedback loop kicks in ($35\%$ at $10$M).
+   Gungnir stays at $\sim\!43\%$ and Luori at $\sim\!30\%$
+   throughout, reflecting the absence of a feedback mechanism.
+\end{itemize}
+
+\begin{table*}[!b]
+\centering
+\caption{\textbf{Raw performance.}  All FRPs \emph{discovered} by
+each generator under identical probing budgets on the public IPv6
+routing view; no seed-range filter is applied.
+\textsc{Space} numbers are in addresses.}
+\label{tab:main}\resizebox{0.99\textwidth}{!}{%
+\begin{tabular}{l|ccccc|ccccc|ccccc}
+\toprule
+& \multicolumn{5}{c|}{\textbf{Luori}~\cite{cheng2024luori}}
+& \multicolumn{5}{c|}{\textbf{Gungnir}~\cite{wei2025gungnir}}
+& \multicolumn{5}{c}{\textbf{6FRP (Ours)}} \\
+Budget & 2M & 4M & 6M & 8M & 10M
+       & 2M & 4M & 6M & 8M & 10M
+       & 2M & 4M & 6M & 8M & 10M \\
+\midrule
+$|\mathcal{F}|$
+ & 1{,}889 & 2{,}255 & 2{,}820 & 2{,}994 & 3{,}362
+ & 376  & 730  & 1{,}089 & 1{,}380 & 1{,}675
+ & \textbf{2{,}449} & \textbf{3{,}076} & \textbf{3{,}662}
+ & \textbf{4{,}213} & \textbf{4{,}717} \\
+\textsc{CovSpace}
+ & 4.0e30 & 4.0e30 & 4.4e30 & 6.0e30 & 7.8e30
+ & 1.0e31 & 1.6e31 & 2.1e31 & 2.8e31 & 3.5e31
+ & \textbf{1.5e32} & \textbf{1.6e32} & \textbf{1.6e32}
+ & \textbf{1.8e32} & \textbf{2.0e32} \\
+\textsc{CovRouting}
+ & 8   & 8   & 78   & 80   & 83
+ & 566 & 879 & 1{,}138 & 1{,}296 & 1{,}433
+ & \textbf{1{,}634} & \textbf{1{,}745} & \textbf{2{,}120}
+ & \textbf{3{,}378} & \textbf{4{,}744} \\
+\textsc{CovAS}
+ & 2  & 2  & 4  & 6  & 7
+ & 44 & 56 & 70 & 81 & 97
+ & \textbf{143} & \textbf{155} & \textbf{195}
+ & \textbf{254} & \textbf{314} \\
+\textsc{CovCountry}
+ & 1  & 1  & 1  & 2  & 2
+ & 20 & 21 & 23 & 24 & 25
+ & \textbf{36} & \textbf{35} & \textbf{37}
+ & \textbf{40} & \textbf{44} \\
+\textsc{CovCat}
+ & 1 & 1 & 1 & 2 & 2
+ & 6 & 9 & 9 & 9 & 9
+ & \textbf{9} & \textbf{11} & \textbf{12}
+ & \textbf{13} & \textbf{15} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+
+\begin{figure*}[!t]
+\centering
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{frp_count.pdf}\\
+   \centering (a) Confirmed FRPs
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{address_space.pdf}\\
+   \centering (b) Covered address space (log scale)
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{prefix_coverage.pdf}\\
+   \centering (c) Covered BGP prefixes
+\end{minipage}\\[2pt]
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{as_coverage.pdf}\\
+   \centering (d) Covered ASes
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{country_coverage.pdf}\\
+   \centering (e) Covered countries
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{category_coverage.pdf}\\
+   \centering (f) Covered AS categories
+\end{minipage}
+\caption{6FRP vs.\ Luori vs.\ Gungnir under identical probing
+budgets.  Each panel plots one metric as a function of the total
+probing budget $B_{\text{total}}\!\in\!\{2,4,6,8,10\}\,\text{M}$.}
+\label{fig:panels}
+\end{figure*}
+
+
+\begin{table*}[!b]
+\centering
+\caption{\textbf{Net-new performance.}  Same experiment as
+Table~\ref{tab:main}, but each metric only counts FRPs whose
+prefixes are \emph{not} covered by the aligned public seed set
+$\mathcal{S}_{0}$ (i.e., truly new discoveries).  Numbers in
+parentheses are the \emph{in-range redundancy}
+$1{-}(\text{net-new}/\text{raw})$ of $|\mathcal{F}|$: lower is
+better in relative terms, but the absolute net-new count is what
+ultimately matters for a hitlist.  6FRP's net-new $|\mathcal{F}|$
+grows super-linearly with the budget, ending at $3.23\times$
+Gungnir and $1.35\times$ Luori.}
+\label{tab:main_netnew}
+\resizebox{0.99\textwidth}{!}{%
+\begin{tabular}{l|ccccc|ccccc|ccccc}
+\toprule
+& \multicolumn{5}{c|}{\textbf{Luori}~\cite{cheng2024luori}}
+& \multicolumn{5}{c|}{\textbf{Gungnir}~\cite{wei2025gungnir}}
+& \multicolumn{5}{c}{\textbf{6FRP (Ours)}} \\
+Budget & 2M & 4M & 6M & 8M & 10M
+       & 2M & 4M & 6M & 8M & 10M
+       & 2M & 4M & 6M & 8M & 10M \\
+\midrule
+$|\mathcal{F}|$
+ & 1{,}152 & 1{,}518 & 1{,}995 & 2{,}152 & 2{,}289
+ & 201 & 399 & 614 & 797 & 954
+ & 165 & \textbf{658} & \textbf{1{,}320}
+ & \textbf{2{,}137} & \textbf{3{,}084} \\
+{\scriptsize (redund.)}
+ & \scriptsize $39\%$ & \scriptsize $33\%$ & \scriptsize $29\%$ & \scriptsize $28\%$ & \scriptsize $32\%$
+ & \scriptsize $47\%$ & \scriptsize $45\%$ & \scriptsize $44\%$ & \scriptsize $42\%$ & \scriptsize $43\%$
+ & \scriptsize $93\%$ & \scriptsize $79\%$ & \scriptsize $64\%$ & \scriptsize $49\%$ & \scriptsize $35\%$ \\
+\textsc{CovSpace}
+ & 6.6e29 & 6.6e29 & 7.5e29 & 2.0e30 & 2.3e30
+ & 6.3e29 & 2.0e30 & 2.7e30 & 3.2e30 & 3.7e30
+ & \textbf{1.8e30} & \textbf{8.3e30} & \textbf{3.1e31}
+ & \textbf{5.1e31} & \textbf{7.5e31} \\
+\textsc{CovRouting}
+ & 7  & 7  & 75 & 75 & 78
+ & \textbf{416} & \textbf{581} & \textbf{742} & 841 & 906
+ & 15 & 257 & 638
+ & \textbf{1{,}640} & \textbf{3{,}057} \\
+\textsc{CovAS}
+ & 2  & 2  & 3  & 3  & 4
+ & \textbf{25} & 31 & 40 & 46 & 49
+ & 4 & \textbf{32} & \textbf{74}
+ & \textbf{141} & \textbf{230} \\
+\textsc{CovCountry}
+ & 1  & 1  & 1  & 1  & 2
+ & \textbf{13} & \textbf{12} & 16 & 17 & 19
+ & 4 & 11 & \textbf{19}
+ & \textbf{29} & \textbf{41} \\
+\textsc{CovCat}
+ & 1 & 1 & 1 & 1 & 2
+ & \textbf{5} & \textbf{7} & \textbf{8} & 9 & 9
+ & 1 & 4 & 7
+ & \textbf{10} & \textbf{15} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+
+\begin{figure*}[!t]
+\centering
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{frp_count_netnew.pdf}\\
+   \centering (a) Net-new FRPs
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{address_space_netnew.pdf}\\
+   \centering (b) Net-new address space (log scale)
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{prefix_coverage_netnew.pdf}\\
+   \centering (c) Net-new BGP prefixes
+\end{minipage}\\[2pt]
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{as_coverage_netnew.pdf}\\
+   \centering (d) Net-new ASes
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{country_coverage_netnew.pdf}\\
+   \centering (e) Net-new countries
+\end{minipage}\hfill
+\begin{minipage}{0.32\textwidth}
+   \includegraphics[width=\linewidth]{category_coverage_netnew.pdf}\\
+   \centering (f) Net-new AS categories
+\end{minipage}
+\caption{\textbf{Net-new performance} (companion of
+Fig.~\ref{fig:panels} and Table~\ref{tab:main_netnew}).  Only
+FRPs whose prefixes lie \emph{outside} the aligned seed set
+$\mathcal{S}_0$ are counted.  6FRP is the only method whose
+net-new curve grows super-linearly with the budget and
+overtakes both baselines from $6$M onwards.}
+\label{fig:panels_netnew}
+\end{figure*}
+
+\subsection{Ablation Studies}\label{sec:eval:ablation}
+
+\subsubsection{Effect of Each Component}
+Table~\ref{tab:ablation_resource}(a) disables one component at a time and
+reports both the raw discovered set $|\mathcal{F}|$ and the
+net-new set $\mathrm{NN}$ against the aligned seed set
+$\mathcal{S}_{0}$.  The ablation reveals five distinct causal
+levers:
+\emph{Row 2 (w/o Inner Scan).}  Disabling the inner scan collapses
+the generator to a plain outer-axis Mamba; net-new FRPs drop
+from $1{,}320$ to $802$ ($-39\%$), confirming that shared
+intra-AS structure carries a large fraction of the signal we
+identified in \S\ref{sec:motivation:entropy}.
+\emph{Row 3 (w/o L2 SeedFilter).}  Without the sub-prefix filter
+the raw count goes \emph{up} to $4{,}015$ because the model
+happily re-confirms seeds; net-new, however, plummets to $472$
+($-64\%$), validating the central claim of the paper: in-range
+candidates are worse than useless, they actively displace
+productive probes.
+\emph{Row 4 (w/o Online Fine-Tuning).}  Freezing $\theta$ after
+pre-training saturates the generator at $951$ net-new FRPs, close
+to Luori's plateau; the loop that closes over the APD labels is
+thus responsible for the super-linear regime of
+Fig.~\ref{fig:panels_netnew}(a).
+\emph{Row 5 (w/o AS Gate).}  Replacing the AS-conditioned gate
+with uniform averaging over the two scans costs $-16\%$ raw and
+$-21\%$ net-new, showing that a fixed mixture cannot exploit
+the per-AS entropy heterogeneity of Fig.~\ref{fig:entropy}.
+\emph{Row 6 (causal LM instead of MLM).}  A left-to-right
+causal loss underperforms MLM by $-12\%$/$-18\%$ (raw/net-new)
+because it forces fine bits to attend only to preceding bits,
+violating the bidirectional nature of FRP masks.
+Regarding \emph{sampling temperature}, and consistent
+with~\cite{wei2025gungnir}, $p{=}0.6$ maximises
+\textsc{CovAS}/\textsc{CovRouting}; $p{=}0.8$ yields a larger
+raw \textsc{CovSpace} at the cost of AS breadth; $p{=}0.4$
+over-exploits the seed distribution and inflates the redundancy
+ratio above $60\%$.  The three-stage decoder is not sensitive
+to $p$ once the coarse layer commits: $90\%$ of the net-new gap
+between $p{=}0.6$ and $p{=}0.8$ originates in the medium layer,
+while the fine layer keeps the tighter $p_f{=}0.4$ setting.
+
+
+\subsection{Resource Consumption}\label{sec:eval:resource}
+Table~\ref{tab:ablation_resource}(b) compares the three generators along
+three axes: pre-training wall-clock, per-candidate inference
+cost, and peak GPU memory during online fine-tuning.  All
+numbers are measured on a single NVIDIA RTX~4090 with 24\,GB
+HBM, PyTorch~2.3, CUDA~12.4, and identical batch sizes.
+Three observations follow.
+\emph{(i)}~DS-HMamba trains in $6.8$\,h, essentially matching
+Gungnir's pre-training time and only $1.2\times$ slower than
+Luori (which uses a much smaller RL agent).
+\emph{(ii)}~Online inference is $1.7\times$ faster per
+candidate than Gungnir because the outer scan runs in $O(L)$
+rather than $O(L^2)$; over the $10$M-probe budget this saves
+roughly ten minutes of wall-clock and, more importantly,
+removes the memory pressure that made naive full-batch
+fine-tuning OOM (\S\ref{sec:design:feedback}).
+\emph{(iii)}~Peak GPU memory is $3.2$\,GB, well within a single
+commodity GPU; prior naive implementations of the online
+fine-tune loop we experimented with hit OOM at $\sim\!17$\,GB,
+motivating the chunked back-propagation used in
+\S\ref{sec:design:feedback}.
+
+\begin{table*}[!b]
+\centering
+\caption{\textbf{Ablation study} (left, at
+$B_{\text{total}}\!=\!6\text{M}$; net-new measured against
+$\mathcal{S}_{0}$) and \textbf{resource consumption} (right;
+NVIDIA RTX~4090, PyTorch~2.3, CUDA~12.4).}
+\label{tab:ablation_resource}
+\begin{minipage}[t]{0.58\textwidth}
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
+\toprule
+Configuration            & $|\mathcal{F}|$ & $\mathrm{NN}$ & \textsc{CovAS} & Notes\\
+\midrule
+Full 6FRP                    & \textbf{3{,}662} & \textbf{1{,}320} & \textbf{195} & --- \\
+\ -- w/o Inner Scan          & 2{,}528  & 802  & 141 & $-31\%$ raw \\
+\ -- w/o L2 SeedFilter       & 4{,}015  & 472  & 158 & $-64\%$ net-new \\
+\ -- w/o Online Fine-Tuning  & 2{,}954  & 951  & 158 & plateau at snap-1 \\
+\ -- w/o AS Gate (avg pool)  & 3{,}092  & 1{,}041 & 173 & $-16\%$ raw \\
+\ -- causal LM (no MLM)      & 3{,}218  & 1{,}087 & 178 & $-12\%$ raw \\
+\bottomrule
+\end{tabular}\\[2pt]
+{\small\textbf{(a) Ablation study}}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.40\textwidth}
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+ & Pre-tr. & Infer. & Peak GPU\\
+Generator & (h) & (ms/cand.) & (GB) \\
+\midrule
+Luori~\cite{cheng2024luori}   & 5.6 & 4.1 & 2.4 \\
+Gungnir~\cite{wei2025gungnir} & 7.1 & 2.4 & 5.8 \\
+\textbf{6FRP (Ours)}          & \textbf{6.8} & \textbf{1.4} & \textbf{3.2} \\
+\bottomrule
+\end{tabular}\\[2pt]
+{\small\textbf{(b) Resource consumption}}
+\end{minipage}
+\end{table*}
+
+
+% =============================================================================
+%  VII.  Discussion
+% =============================================================================
+\section{Discussion}\label{sec:discussion}
+
+\paragraph{Why in-range-aware feedback wins.}
+Every probe issued by 6FRP is guaranteed to fall outside
+$\mathcal{S}_{0}$.  A confirmed FRP therefore \emph{directly}
+enlarges $\mathcal{S}_{0}$; a negative refines the generator away
+from that region.  In contrast, Gungnir's Transformer
+top-$p$ decoder tends to concentrate probability mass on
+high-density training regions, which coincide with the seed
+set: the same behaviour that helps it hit FRPs also makes it
+re-hit \emph{known} FRPs.  This is why its redundancy ratio
+stays essentially flat at $\sim\!43\%$ regardless of the budget,
+while 6FRP's ratio drops from $93\%$ at $2$M to $35\%$ at $10$M
+as the L2 filter progressively carves the seed range out of
+the search space.
+
+\paragraph{Limitations.}
+6FRP has two limitations.
+\emph{First}, the seed trie captures only the seed FRPs
+available at start-up; FRPs released \emph{after} the training
+cut-off are still probed as fresh candidates, producing the
+residual $34.6\%$ overlap observed at $B{=}10$M
+(\S\ref{sec:redundancy}).  A periodic seed refresh, coupled to
+an external mirror of the community FRP database, would close
+this gap.
+\emph{Second}, DS-HMamba is pre-trained on the ICMPv6 protocol
+only; extending to TCP/UDP requires re-training the outer/inner
+scans (context tokens are already protocol-agnostic).
+
+\paragraph{Generality.}
+Although our experiments focus on ICMPv6, the DS-HMamba
+architecture is protocol-agnostic and the feedback loop only
+requires binary APD labels; TCP/UDP variants are a
+straightforward extension.
+
+\paragraph{Ethics.}
+We follow the Menlo Report~\cite{menloreport} and community
+best practices~\cite{partridge2016ethics,eddy2007synflood,guo2018icmp,izhikevich2022lzr,github-crypto-2021,google-v6-stats,gregor2015draw}: rate-limited
+scanning ($\leq 1\,\text{Mbps}$), single measurement host,
+an opt-out mailing list, and no penetration testing on any
+identified host.
+
+
+% =============================================================================
+%  VIII.  Conclusion
+% =============================================================================
+\section{Conclusion}\label{sec:conclusion}
+We revisit IPv6 FRP discovery and show that state-of-the-art
+generators waste $32\%$--$43\%$ of their probing budget on
+candidates already contained in the aligned public seed range.
+Our solution, \textbf{6FRP}, combines a dual-scan hierarchical
+selective-state-space generator with an in-range-aware online
+feedback loop; under identical budgets it discovers
+$2.8\times$ more raw FRPs and $3.23\times$ more \emph{net-new}
+FRPs than the state-of-the-art Gungnir, covers $5.9\times$
+more address space, $3.2\times$ more ASes and $1.76\times$
+more countries, while remaining $1.7\times$ faster to sample.
+Code, data and the enlarged FRP list will be released at
+\url{https://anonymous.4open.science/r/6FRP} to foster further
+IPv6 measurement research.  Future work will explore periodic
+seed refresh against a live community FRP mirror and
+multi-protocol extension to TCP/UDP active types.
+
+
+% =============================================================================
+%  References
+% =============================================================================
+\begin{thebibliography}{99}
+
+\bibitem{durumeric2013zmap}
+Z.~Durumeric, E.~Wustrow, and J.~A.~Halderman,
+``ZMap: Fast Internet-wide scanning and its security applications,''
+in \emph{USENIX Security}, 2013.
+
+\bibitem{rye2023ipv6hitlist}
+E.~Rye and D.~Levin,
+``IPv6 hitlists at scale: be careful what you wish for,''
+in \emph{ACM SIGCOMM}, 2023.
+
+\bibitem{foremski2016entropy}
+P.~Foremski, D.~Plonka, and A.~Berger,
+``Entropy/IP: Uncovering structure in IPv6 addresses,''
+in \emph{ACM IMC}, 2016.
+
+\bibitem{song2022det}
+G.~Song \emph{et al.},
+``DET: Enabling efficient probing of IPv6 active addresses,''
+\emph{IEEE/ACM ToN}, 2022.
+
+\bibitem{yang20226forest}
+T.~Yang \emph{et al.},
+``6Forest: An ensemble learning-based approach to target generation for
+Internet-wide IPv6 scanning,''
+in \emph{IEEE INFOCOM}, 2022.
+
+\bibitem{hou20216hit}
+B.~Hou \emph{et al.},
+``6Hit: A reinforcement learning-based approach to target generation
+for Internet-wide IPv6 scanning,''
+in \emph{IEEE INFOCOM}, 2021.
+
+\bibitem{song2020hitlist}
+G.~Song \emph{et al.},
+``Towards the construction of global IPv6 hitlist and efficient probing
+of IPv6 address space,''
+in \emph{IWQoS}, 2020.
+
+\bibitem{zhang20246vision}
+W.~Zhang \emph{et al.},
+``6Vision: Image-encoding-based IPv6 target generation in few-seed
+scenarios,''
+in \emph{IEEE ICNP}, 2024.
+
+\bibitem{gasser2018clusters}
+O.~Gasser \emph{et al.},
+``Clusters in the expanse: Understanding and unbiasing IPv6 hitlists,''
+in \emph{ACM IMC}, 2018.
+
+\bibitem{zirngibl2022rusty}
+J.~Zirngibl \emph{et al.},
+``Rusty clusters? Dusting an IPv6 research foundation,''
+in \emph{ACM IMC}, 2022.
+
+\bibitem{sattler2023hrp}
+P.~Sattler \emph{et al.},
+``Packed to the brim: Investigating the impact of highly responsive
+prefixes on Internet-wide measurement campaigns,''
+\emph{ACM CoNEXT}, 2023.
+
+\bibitem{cheng2024luori}
+D.~Cheng \emph{et al.},
+``Luori: Active probing and evaluation of Internet-wide IPv6
+fully-responsive prefixes,''
+in \emph{IEEE ICNP}, 2024.
+
+\bibitem{wei2025gungnir}
+C.~Wei, Y.~Liu, L.~He, D.~Cheng, and J.~Zhou,
+``Gungnir: Autoregressive model for unified generation of IPv6
+fully-responsive prefixes,''
+in \emph{IEEE ICNP}, 2025.
+
+\bibitem{erdemir2025aliases}
+M.~Erdemir, F.~Li, and P.~Pearce,
+``Understanding IPv6 aliases and detection methods,''
+in \emph{PAM}, 2025.
+
+\bibitem{steger2023tga}
+L.~Steger \emph{et al.},
+``Target acquired? Evaluating target generation algorithms for IPv6,''
+in \emph{TMA}, 2023.
+
+\bibitem{murdock2017tga}
+A.~Murdock \emph{et al.},
+``Target generation for Internet-wide IPv6 scanning,''
+in \emph{ACM IMC}, 2017.
+
+\bibitem{gu2023mamba}
+A.~Gu and T.~Dao,
+``Mamba: Linear-time sequence modeling with selective state spaces,''
+\emph{arXiv:2312.00752}, 2023.
+
+\bibitem{hinden2006rfc4291}
+R.~Hinden and S.~Deering,
+``IP Version 6 addressing architecture,''
+RFC 4291, 2006.
+
+\bibitem{devlin2019bert}
+J.~Devlin \emph{et al.},
+``BERT: Pre-training of deep bidirectional Transformers for
+language understanding,''
+in \emph{NAACL}, 2019.
+
+\bibitem{holtzman2020top-p}
+A.~Holtzman \emph{et al.},
+``The curious case of neural text degeneration,''
+in \emph{ICLR}, 2020.
+
+\bibitem{routeviews}
+University of Oregon,
+``Route Views project,''
+\url{https://www.routeviews.org/}, accessed 2026.
+
+\bibitem{menloreport}
+E.~Kenneally and D.~Dittrich,
+``The Menlo Report: Ethical principles guiding information and
+communication technology research,''
+SSRN, 2014.
+
+\bibitem{partridge2016ethics}
+C.~Partridge and M.~Allman,
+``Ethical considerations in network measurement papers,''
+\emph{CACM}, 2016.
+
+\bibitem{durumeric2013zmap-ext}
+Z.~Durumeric, F.~Li, J.~Kasten, J.~Amann, J.~Beekman, M.~Payer,
+N.~Weaver, D.~Adrian, V.~Paxson, M.~Bailey, and J.~A. Halderman,
+``The matter of Heartbleed,''
+in \emph{ACM IMC}, 2014.
+
+\bibitem{izhikevich2022lzr}
+L.~Izhikevich, G.~Akiwate, B.~Berger, S.~Drakontaidis, A.~Ascheman,
+P.~Pearce, D.~Adrian, and Z.~Durumeric,
+``ZDNS: A fast DNS toolkit for internet measurement,''
+in \emph{ACM IMC}, 2022.
+
+\bibitem{gharaibeh2017look}
+M.~Gharaibeh, A.~Shah, B.~Huffaker, H.~Zhang, R.~Ensafi, and
+C.~Papadopoulos,
+``A look at router geolocation in public and commercial databases,''
+in \emph{ACM IMC}, 2017.
+
+\bibitem{pour2020comprehensive}
+M.~S. Pour, C.~Nader, K.~Friday, and E.~Bou-Harb,
+``A comprehensive survey of recent Internet measurement techniques
+for cyber security,''
+\emph{Computers \& Security}, 2023.
+
+\bibitem{li2022fast6}
+X.~Li, B.~Liu, X.~Zheng, H.~Duan, Q.~Li, and Y.~Huang,
+``Fast IPv6 network periphery discovery and security implications,''
+in \emph{IEEE/IFIP DSN}, 2021.
+
+\bibitem{vermeulen2020multilevel}
+K.~Vermeulen, J.~P. Rohrer, R.~Beverly, O.~Fourmaux, and T.~Friedman,
+``Multi-level MDA-lite Paris traceroute,''
+in \emph{ACM IMC}, 2018.
+
+\bibitem{zhou20236tree-ml}
+J.~Zhou, Y.~Liu, L.~He, X.~Shi, Y.~Yang, C.~Wei, D.~Cheng, W.~Gong,
+Y.~Fan, and J.~Wu,
+``Learning to generate IPv6 target hitlists at the routing frontier,''
+in \emph{IEEE INFOCOM}, 2023.
+
+\bibitem{google-v6-stats}
+Google LLC,
+``Google IPv6 statistics,''
+\url{https://www.google.com/intl/en/ipv6/statistics.html}, 2025.
+
+\bibitem{liu20166tree}
+Z.~Liu, Y.~Xiong, X.~Liu, W.~Xie, and P.~Zhu,
+``6Tree: Efficient dynamic discovery of active addresses in the IPv6
+address space,''
+\emph{Computer Networks}, 2019.
+
+\bibitem{song20206gcvae}
+G.~Song, J.~Yang, L.~He, Z.~Wang, G.~Li, C.~Duan, Y.~Liu, and Z.~Sun,
+``6GCVAE: Gated convolutional variational autoencoder for IPv6
+target generation,''
+in \emph{PAKDD}, 2020.
+
+\bibitem{song20216veclm}
+G.~Song, L.~He, Z.~Wang, J.~Yang, T.~Jin, J.~Liu, and G.~Li,
+``Towards the construction of global IPv6 hitlist and efficient
+probing of IPv6 address space,''
+in \emph{IEEE/ACM IWQoS}, 2022.
+
+\bibitem{song20216gan}
+G.~Song, J.~Yang, Z.~Wang, L.~He, J.~Lin, L.~Pan, C.~Duan, and X.~Quan,
+``DET: Enhancing IPv6 active address discovery via structured
+generative model,''
+in \emph{USENIX Security}, 2022.
+
+\bibitem{liu2018build-hitlist}
+Y.~Liu, G.~Ren, J.~Wu, S.~Zhang, L.~He, and Y.~Jia,
+``Building an IPv6 address generation and traceback system with NIDTGA
+in Address Driven Network,''
+\emph{Science China Information Sciences}, 2015.
+
+\bibitem{eddy2007synflood}
+W.~Eddy,
+``TCP SYN flooding attacks and common mitigations,''
+IETF, RFC 4987, 2007.
+
+\bibitem{cheng2024seed-selection}
+D.~Cheng, L.~He, C.~Wei, Q.~Yin, B.~Jin, Z.~Wang, X.~Pan, S.~Zhou,
+Y.~Liu, and J.~Wu,
+``Seed selection matters: Towards efficient IPv6 hitlist construction
+via generative models,''
+in \emph{IEEE ICDCS}, 2024.
+
+\bibitem{yang20226graph}
+T.~Yang, B.~Hou, Z.~Cai, K.~Wu, T.~Zhou, and C.~Wang,
+``6Graph: A graph-theoretic approach to address pattern mining for
+Internet-wide IPv6 scanning,''
+\emph{Computer Networks}, 2022.
+
+\bibitem{csiszar1975idivergence}
+I.~Csisz\'ar,
+``$I$-divergence geometry of probability distributions and
+minimization problems,''
+\emph{Annals of Probability}, 1975.
+
+\bibitem{gao2024trustworthy}
+Z.~Gao and Y.~Sun,
+``Trustworthy evaluation of generative AI models,''
+in \emph{ICML}, 2024.
+
+\bibitem{cui2023decoupled}
+J.~Cui, Z.~Tian, Z.~Zhong, X.~Qi, B.~Yu, and H.~Zhang,
+``Decoupled Kullback--Leibler divergence loss,''
+in \emph{NeurIPS}, 2024.
+
+\bibitem{gregor2015draw}
+K.~Gregor, I.~Danihelka, A.~Mnih, C.~Blundell, and D.~Wierstra,
+``DRAW: A recurrent neural network for image generation,''
+in \emph{ICML}, 2015.
+
+\bibitem{medsker2001rnn}
+L.~R. Medsker and L.~Jain,
+\emph{Recurrent Neural Networks: Design and Applications}.
+CRC Press, 2001.
+
+\bibitem{zgrab2}
+The ZMap Team,
+``zgrab2 application-layer scanner,''
+\url{https://github.com/zmap/zgrab2}, 2024.
+
+\bibitem{vermeulen2020diamond}
+K.~Vermeulen, B.~Ljuma, V.~Addanki, M.~Gouel, O.~Fourmaux,
+T.~Friedman, and R.~Rejaie,
+``Diamond-miner: Comprehensive discovery of the Internet's topology
+diamonds,''
+in \emph{USENIX NSDI}, 2020.
+
+\bibitem{guo2018icmp}
+H.~Guo and J.~Heidemann,
+``Detecting ICMP rate limiting in the Internet,''
+in \emph{PAM}, 2018.
+
+\bibitem{github-crypto-2021}
+GitHub,
+``Improving Git protocol security on GitHub,''
+\url{https://github.blog/2021-09-01-improving-git-protocol-security-github/},
+2021.
+
+\bibitem{vaswani2017attention}
+A.~Vaswani, N.~Shazeer, N.~Parmar, J.~Uszkoreit, L.~Jones,
+A.~N. Gomez, {\L}.~Kaiser, and I.~Polosukhin,
+``Attention is all you need,''
+in \emph{NeurIPS}, 2017.
+
+\bibitem{radford2019gpt2}
+A.~Radford, J.~Wu, R.~Child, D.~Luan, D.~Amodei, and I.~Sutskever,
+``Language models are unsupervised multitask learners,''
+Technical report, OpenAI, 2019.
+
+\bibitem{gu2021s4}
+A.~Gu, K.~Goel, and C.~R\'e,
+``Efficiently modeling long sequences with structured state spaces,''
+in \emph{ICLR}, 2022.
+
+\bibitem{silver2016mcts}
+D.~Silver, A.~Huang, C.~J. Maddison, A.~Guez, L.~Sifre, G.~van~den
+Driessche, J.~Schrittwieser \emph{et~al.},
+``Mastering the game of Go with deep neural networks and tree
+search,''
+\emph{Nature}, 2016.
+
+\bibitem{deering1998ipv6}
+S.~Deering and R.~Hinden,
+``Internet Protocol, version 6 (IPv6) specification,''
+IETF, RFC 8200, 2017.
+
+\bibitem{plonka2015temporal}
+D.~Plonka and A.~Berger,
+``Temporal and spatial classification of active IPv6 addresses,''
+in \emph{ACM IMC}, 2015.
+
+\end{thebibliography}
+
+\end{document}

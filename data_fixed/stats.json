@@ -1,0 +1,58 @@
+{
+  "total_seeds_input": 214158,
+  "seeds_resolved": 214102,
+  "seeds_unresolved": 56,
+  "seeds_without_as_meta": 461,
+  "unique_as_count": 299,
+  "top_10_AS_by_seed_count": [
+    [
+      36183,
+      27027
+    ],
+    [
+      41095,
+      25340
+    ],
+    [
+      45609,
+      22771
+    ],
+    [
+      9009,
+      8730
+    ],
+    [
+      34984,
+      7848
+    ],
+    [
+      62240,
+      6615
+    ],
+    [
+      6079,
+      6199
+    ],
+    [
+      208022,
+      5955
+    ],
+    [
+      204916,
+      4346
+    ],
+    [
+      16509,
+      4205
+    ]
+  ],
+  "vocab_sizes": {
+    "as": 300,
+    "org": 273,
+    "country (geo)": 51,
+    "cat1": 15,
+    "cat2": 24
+  },
+  "max_as_num_raw": 400618,
+  "max_as_id_compact": 299
+}

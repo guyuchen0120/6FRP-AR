@@ -1,0 +1,2881 @@
+Gungnir: Autoregressive Model for Unified
+Generation of IPv6 Fully Responsive Prefixes
+
+Chentian Wei∗†, Ying Liu∗†, Lin He∗†, Daguo Cheng∗†, Jiasheng Zhou∗†
+∗Tsinghua University, †Zhongguancun Laboratory
+
+Abstract—With the widespread adoption of IPv6,
+
+its vast
+address space presents significant challenges for network asset
+discovery. Traditional exhaustive scanning approaches are no
+longer practical, while strategies based on target generation
+algorithms are increasingly undermined by the existence of
+Fully Responsive Prefixes (FRPs)—prefixes in which all addresses
+appear responsive to probing. FRPs distort scanning results, in-
+troducing bias and inefficiency. Existing FRP probing techniques
+suffer from limited scalability, poor accuracy, and restricted
+applicability in large-scale IPv6 environments.
+
+To this end, we propose Gungnir, a multi-protocol unified FRP
+probing algorithm based on autoregressive semantic modeling.
+Gungnir captures the intricate relationships between FRP pat-
+terns and their influencing factors through a deep semantic learn-
+ing architecture. It leverages prefix inference and a granularity
+correction mechanism to accurately predict and validate FRPs,
+while mitigating errors from incorrect prefix-length estimation.
+Extensive experiments demonstrate that Gungnir outperforms
+state-of-the-art techniques, achieving up to 27× higher efficiency,
+4.2× wider address space coverage, and broader coverage of both
+autonomous systems and routing prefixes under the same probing
+budget. Beyond performance, we further analyze the service and
+port distributions of the discovered FRPs, uncovering operational
+patterns and potential security implications. These insights offer
+valuable guidance for IPv6 measurement, address discovery, and
+network defense.
+
+I. INTRODUCTION
+
+Internet-wide network scanning, as the core technology of
+cyberspace resource mapping, obtains the response character-
+istics of the target network by actively sending customized
+probe packets. For example, tools such as ZMap [1] enable
+high-performance active address scanning. It provides basic
+data support for researching Internet infrastructure security [2],
+[3], conducting geolocation analysis [4], and analyzing the
+impact of the Internet on the real world [5], and plays a crucial
+role in the field of network measurement [6]–[10]. However,
+with the large-scale deployment of the IPv6 protocol [11],
+the huge space brought by its 128-bit address makes network
+scanning face new challenges. Within this space lies a special
+class of prefixes—Fully Responsive Prefixes (FRPs)—which
+span large ranges where every address appears responsive to
+probing [12], [13]. For example, if all addresses within a target
+prefix respond to ICMPv6 Echo messages, the prefix can be
+classified as an FRP for ICMPv6. Nevertheless, it is evident
+that such responses cannot originate from a single host.
+
+FRPs have significantly influenced the widely used target
+generation algorithms (TGAs) [14]–[22] employed in active
+address probing—one of the current research hotspots. For
+
+979-8-3315-0376-5/25/$31.00 ©2025 IEEE
+
+example, all addresses under a /32 prefix (totaling 296 ad-
+dresses) may appear responsive,
+leading scanners to treat
+them as legitimate targets. This proliferation of non-authentic
+or synthetic addresses introduces substantial noise into scan-
+ning results, potentially causing misinterpretations—such as
+assuming that multiple addresses within an FRP correspond
+to distinct services hosted on separate machines [12], [23].
+The widespread deployment of FRPs also reflects various
+intentional uses: running multiple services on a single server,
+enabling CDN providers to implement server-side load bal-
+ancing, or facilitating security researchers to deploy honeypots
+for traffic analysis [12], [23]–[25]. As a result, understanding
+the global distribution and behavior of FRPs has become
+increasingly critical for the development of next-generation
+scanning methodologies. Accurate identification and handling
+of FRPs not only improve the fidelity of scanning outcomes
+but also lay the groundwork for their constructive application
+in network research and operations.
+
+Previous research efforts [26] have identified the presence
+of such prefixes in active address probing. To mitigate their
+impact, a method known as MAPD [12] was proposed for
+identifying these prefixes. However, MAPD fundamentally
+relies on an exhaustive generation approach that produces a
+set of random candidate addresses for probing—a strategy
+that becomes impractical given the vastness of the IPv6
+address space. Furthermore, MAPD is limited to detecting
+seed addresses (i.e., known active IPv6 addresses), rendering
+it ineffective for comprehensive, Internet-wide FRP discovery.
+To overcome these limitations, Luori [25] efficiently uncovers
+FRPs via active probing. It formulates FRP detection as a
+reinforcement learning problem, leveraging Monte Carlo Tree
+Search (MCTS) to guide probing and improve efficiency.
+
+Despite recent advancements, FRP probing continues to
+face several key challenges: (1) Enormous Decision Space.
+FRP probing requires the identification of target prefixes
+within the vast IPv6 address space. Existing methods such
+as MAPD [12], which relies on exhaustive enumeration of
+prefixes with fixed lengths, and Luori [25], which adopts
+a tree-based approach for layer-by-layer expansion, struggle
+with accurately predicting both the lengths and patterns of
+FRPs. These limitations lead to inefficiencies, especially when
+incorrect prefix lengths are assumed. For instance, mistakenly
+treating a /64 prefix as a /80 can result in significant resource
+waste and introduce substantial noise into the dataset due
+to unnecessary probing. (2) Multi-Protocol and Port-Type
+Probing Complexity. Previous work [12], [25] also falls short
+
+5
+2
+4
+2
+9
+1
+1
+1
+.
+5
+2
+0
+2
+.
+4
+4
+8
+5
+6
+P
+N
+C
+
+I
+/
+9
+0
+1
+1
+.
+0
+1
+
+:
+I
+
+O
+D
+
+|
+
+E
+E
+E
+I
+
+5
+2
+0
+2
+©
+0
+0
+.
+1
+3
+$
+/
+5
+2
+/
+5
+-
+6
+7
+3
+0
+-
+5
+1
+3
+3
+-
+8
+-
+9
+7
+9
+
+|
+
+)
+P
+N
+C
+
+I
+(
+
+s
+l
+o
+c
+o
+t
+o
+r
+P
+k
+r
+o
+w
+t
+e
+N
+n
+o
+e
+c
+n
+e
+r
+e
+f
+n
+o
+C
+
+l
+a
+n
+o
+i
+t
+a
+n
+r
+e
+t
+n
+I
+
+d
+r
+3
+3
+E
+E
+E
+I
+
+5
+2
+0
+2
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+in addressing FRP probing across the full range of protocol
+and port types. Our study reveals that FRPs vary significantly
+in behavior depending on protocol (e.g., TCP, UDP) and port
+combinations, with distinct activity states. Effective discovery
+thus requires Internet-wide probing under each protocol-port
+pair, which introduces an enormous overhead. For example,
+considering both TCP and UDP, there are 65,536×2=131,072
+possible port-type combinations to account for. Consequently,
+a highly scalable algorithm is needed to support comprehen-
+sive FRP probing across all protocols and ports in the IPv6
+space, while maintaining efficiency and accuracy.
+
+To this end, we propose Gungnir, a novel FRP probing
+algorithm that unifies support for multiple protocols and port
+types through an autoregressive modeling framework. The
+core idea behind Gungnir is to leverage deep learning–based
+semantic understanding to capture complex FRP patterns.
+Specifically, the algorithm encodes FRP patterns along with as-
+sociated contextual factors—including protocol and port types,
+routing prefixes, originating ASes, affiliated organizations, and
+business categories—and learns their intricate relationships.
+By incorporating a self-attention mechanism and positional en-
+coding, Gungnir effectively extracts and represents the seman-
+tic dependencies within sequential data, such as correlations
+between business types and address patterns. During prefix
+inference, Gungnir utilizes this learned semantic information
+to generate a list of candidate FRPs. To mitigate the risk
+of “FRP Misleading” caused by granularity mismatches in
+prefix lengths, the algorithm employs a granularity correction
+thereby enhancing accuracy. Overall, Gungnir
+mechanism,
+enables efficient and precise probing of FRPs across the IPv6
+address space.
+
+Contributions. The primary contributions of this work are
+
+as follows:
+
+• We propose the first FRP prediction algorithm unified
+across multiple protocols and ports. By leveraging an
+autoregressive model for the semantic learning of FRP
+patterns, our approach overcomes the limitations of tra-
+ditional methods and enables accurate prediction of FRPs
+across a wide range of protocol and port types.
+
+• We implement a prototype of Gungnir, and evaluation
+results show that under the same prefix budget, Gungnir
+achieves nearly 27× faster probing speed across vari-
+ous protocols and ports compared to the state-of-the-art
+method.
+
+• This study reveals the intrinsic pattern of FRPs and
+their patterns in distribution, and deeply analyzes the
+statistical characteristics, pattern information of FRPs.
+The deployment We reveal potential security risks such
+as outdated versions, weak cryptographic compatibility,
+and shared certificates. For the community to better carry
+out the research work on active addresses and FRPs,
+we make our code and all data public, and construct
+a list of multi-active types of FRPs with the widest
+coverage to the best of our knowledge. Code is available
+at https://github.com/THUNAME/Gungnir.
+
+II. BACKGROUND AND RELATED WORK
+
+A. Fully Responsive Prefixes
+
+Before the formalization of FRPs, Murdock et al. [26] ob-
+served a notable phenomenon in IPv6 active address probing:
+a significant proportion of addresses within the same prefix
+responded uniformly to Internet-wide scans, a characteristic
+they termed aliased prefixes. Their active probing experiments
+revealed that 98% of responsive addresses resided in regions
+exhibiting large-scale aliasing, despite these addresses ulti-
+mately resolving to the same host or network service via FRPs
+configured across different protocol ports [27]. Building on
+this discovery, Zirngibl et al. [13] rigorously defined FRPs as
+prefixes demonstrating universal address responsiveness (i.e.,
+a 100% probe reply rate), while critically differentiating them
+from aliased prefixes by relaxing the constraint of single-host
+control. This conceptual framework establishes aliased pre-
+fixes as a proper subset of FRPs—a hierarchical relationship
+consistently maintained in our subsequent analysis. A parallel
+phenomenon exists in IPv4 networks, where Sattler et al. [27]
+identified highly responsive prefixes (HRPs). These prefixes
+exhibit responsiveness from over 90% of their constituent
+addresses for specific ports. Unlike their IPv6 counterparts,
+IPv4 HRPs may encompass multiple hosts, including content
+delivery networks (CDNs) or TCP proxy infrastructures.
+
+Recent research has increasingly focused on the measure-
+ment biases introduced by these phenomena. Oliver Gasser et
+al. [12] demonstrated that aliased prefixes artificially inflate
+hitlist address counts by mapping multiple entries to single
+devices, thereby distorting assessments of network scale and
+topology. Similarly, Lion Steger et al. [28] identified aliased
+prefixes as a critical consideration in IPv6 measurement
+methodologies.
+
+B. FRP Probing
+
+For FRP probing, earlier studies [26] employed a straight-
+forward method to detect aliased prefixes. First, they selected
+the /96 prefix containing the responding probe addresses, then
+randomly generated three addresses within that prefix. Three
+TCP SYN probes were sent to each address, and if all three
+responded to at least one probe, the prefix was deemed aliased.
+However, this approach introduces bias, prompting Gasser et
+al. to propose Aliased Prefix Detection (APD) [12]. APD
+enhances reliability by randomly selecting 16 addresses within
+the 0-f sub-prefix of a candidate prefix. If all 16 addresses
+respond, the prefix is labeled as aliased. Subsequent FRP
+probing efforts have largely adopted the APD methodology,
+evolving into MAPD [14], [17], [21], [25], [29]. MAPD
+exhaustively enumerates all possible candidate prefixes and
+applies aliased prefix probing. As noted by [25], these methods
+do not verify whether the probed addresses resolve to the same
+host, effectively making them FRP probing techniques rather
+than strict alias detection methods.
+
+Most recently, Luori [25] introduced an active probing
+framework for FRP that leverages MCTS to transform the
+vast IPv6 search space into a reinforcement learning decision-
+making process. While effective, its hierarchical tree expansion
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+Fig. 1: Calculated values of pattern entropy under random and
+clustered distributions
+
+Fig. 2: Variation of pattern entropy in different types
+design introduces length dependency, limiting its scalability in
+FRP probing.
+
+III. PROBLEM ANALYSIS AND DEFINITION
+
+The purpose of FRP probing is to identify as many FRPs
+as possible within a given target routing prefix, building upon
+the active address probing framework proposed in [30] by first
+analyzing the structural patterns of FRPs. FRPs consist of
+two main components—the fixed routing prefix (determined
+by BGP announcements) and variable FRP patterns—and our
+analysis focuses on the latter. We model these patterns as a
+prefix tree where the root represents the routing prefix and
+each subsequent layer corresponds to binary expansions of
+the pattern, revealing distinct distributional characteristics that
+we quantify through the novel concept of pattern entropy.
+This approach enables systematic exploration of FRP patterns
+while accounting for their hierarchical structure and variability
+across the prefix tree.
+
+Proposition 1: Given a seed set S, let P (x) denote the
+probability of reaching leaf node x in the prefix tree. The FRP
+pattern entropy Hpattern(S) for a layer of length l is defined:
+
+Hpattern(S) = −
+
+(cid:88)
+
+P (x) log P (x)
+
+(1)
+
+The pattern entropy Hpattern(S) effectively quantifies the
+distribution characteristics of FRP patterns. As illustrated in
+Figure 1, the left side demonstrates a random distribution
+(maximal entropy), while the right side shows a clustered dis-
+tribution (lower entropy). A smaller pattern entropy indicates
+a more regular and structured pattern distribution in FRPs.
+Mathematically, it can be proven that Hpattern(S) reaches its
+maximum value when patterns are uniformly and randomly
+distributed across the prefix tree.
+
+M AX(Hpattern(S)) = l, P (xi) =
+
+(2)
+Figure 2 presents the pattern entropy statistics for the current
+FRP seed set [25], categorized by AS, organization, and
+
+1
+l
+
+business category (sorted by pattern count). The horizontal
+axis represents pattern length l, while the vertical axis denotes
+pattern entropy. Notably, all observed entropy values remain
+significantly below the theoretical upper bound (blue line),
+which represents the entropy of randomly distributed patterns.
+This substantial gap indicates that FRP patterns exhibit strong
+regularity, suggesting potential for optimization through pat-
+tern mining to enhance probing accuracy.
+
+Furthermore,
+
+the analysis reveals that segmenting FRPs
+based on business relationships consistently reduces pattern
+entropy across most dimensions. This entropy reduction im-
+plies that granularity changes—whether by length, AS, or
+other attributes—significantly influence FRP pattern distribu-
+tion. Our findings, corroborated through rigorous data analysis,
+demonstrate for the first time that FRPs exhibit pronounced
+clustering behavior across multiple dimensions (e.g., length,
+AS), with complex interactions between these factors.
+
+Based on the observed regularity in FRP distribution across
+organizations and business types, as well as its pronounced
+clustering behavior at different prefix pattern granularities, we
+formulate the mathematical objective for FRP probing as:
+
+min
+θ
+
+KL (Pd(x)∥Pθ(x))
+
+(3)
+
+where d represents the dataset, θ denotes the probing algorithm
+parameters, and KL(·) is the Kullback-Leibler divergence [31],
+which quantifies the discrepancy between the data distribution
+Pd(x) and the algorithm’s output distribution Pθ(x).
+
+Interestingly,
+
+this objective aligns with the optimization
+goals of generative AI algorithms [32], [33], which have
+demonstrated remarkable success across diverse domains. Mo-
+tivated by this convergence, we leverage generative AI princi-
+ples to design Gungnir, our novel FRP probing framework.
+
+IV. Gungnir DESIGN
+This section presents the detailed design of Gungnir. We
+begin with an overview of the approach, followed by a detailed
+explanation of each module’s design.
+
+A. Overview of Gungnir
+
+The goal of Gungnir is to leverage an autoregressive model
+to capture the patterns of known types of FRP, enabling
+efficient discovery of FRPs in the wild across different
+protocols and ports. The FRP probing process of Gungnir
+consists of three steps: semantic learning, prefix inference,
+and online scanning. As shown in Figure 4,
+to achieve
+highly scalable FRP pattern prediction, Gungnir first employs
+an autoregressive model for semantic learning to capture
+the complex relationships between FRP patterns and their
+correlates (§IV-B). This probabilistic model is then used to
+generate semantic representations of FRP patterns. During the
+prediction phase, Gungnir leverages the learned semantic in-
+formation of routing prefixes to predict potential FRP patterns
+and generates candidate FRPs (§IV-C). In the scanning phase,
+Gungnir performs online scanning of these candidate FRPs,
+collects results, and determines whether the candidates are
+actual FRPs based on the probing feedback. For confirmed
+FRPs, granularity correction is applied to derive a precise set
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+011010SRandom0.250.250.250.25011010S0.10.70.10.1Clustering!!"##$%&"=2!!"##$%&"=1.361234567891011121314151617181920Length05101520EntropyRandom(upper bound)AllCATEGORY(Top1)SUBCATEGORY(Top1)ORG(Top1)AS(Top1)Fig. 3: Semantic learning process and model architecture diagram. The model performs semantic learning by learning multiple
+associative information.
+
+protocol and port types, routing prefixes, associated ASes,
+affiliated organizations, and business categories. These factors
+exhibit complex semantic relationships that are difficult to cap-
+ture using simple rule-based approaches or traditional feature
+engineering. Therefore, we aim to design a highly scalable
+model to implement a unified FRP prediction algorithm that
+the core of this model
+is protocol- and port-agnostic. At
+is its ability to dynamically generate conditional probability
+distributions based on the characteristics of different proto-
+cols, enabling joint probabilistic modeling of FRP patterns.
+Therefore, as shown in Figure 3, we adopt a sequence model
+for semantic learning of FRP patterns. This allows Gungnir to
+leverage self-attention mechanisms and embedding techniques
+to capture intricate dependencies within the input data. By
+optimizing cross-entropy loss, the model effectively identifies
+and avoids FRP Misleading (Misjudging the length of the
+FRP), ultimately enhancing the accuracy of FRP probing.
+
+Embedding. The embedding layer provides a high-
+dimensional representation of the input data, enabling the
+model to capture rich semantic information. To effectively
+learn the complex relationships among protocol and port types,
+routing prefixes, belonging ASes, affiliated organizations, and
+business types, Gungnir uses a long sequence for semantic
+learning. The tokenizer begins by converting the target prefixes
+into a sequence of tokens, while integrating relevant contextual
+information, including BGP route announcements, business
+relationships, and other network attributes. In the tokeniza-
+tion process, the system first assigns sequential identifiers to
+each token within the sequence information (for example,
+Cloudflare ID: 124). It then maintains a mapping table that
+associates these numerical identifiers with their corresponding
+high-dimensional vector representations, establishing a con-
+sistent reference framework for downstream processing. In
+the process of mapping FRPs to tokens, FRPs are expanded
+into a binary form representation to ensure that the model
+can perform more fine-grained learning and prediction. The
+composition of FRPs is divided into a routing prefix part
+and an FRP pattern part. These high-dimensional embedding
+vectors are learnable parameters during semantic learning.
+To preserve and leverage the sequential nature of the data,
+positional encoding P E is added to the token embeddings
+T E, resulting in the final input embeddings IE that are fed
+into the model. This design enables the model to effectively
+
+Fig. 4: Overview of Gungnir. The orange lines indicate the pat-
+tern information of Gungnir association levels of information
+learning to FRP in semantic learning. The blue lines indicate
+the prediction process under different routing prefixes in the
+inference process.
+
+of prefixes, resulting in the construction of an FRP database
+with broad coverage and high accuracy (§IV-D).
+
+1) Why Autoregressive Model: The FRP pattern is inher-
+ently characterized by sequential dependency, where each bit
+in the prefix depends on preceding bits—a property stem-
+ming from IPv6 addressing architecture [34]. Autoregressive
+models [35] effectively capture this sequential dependence.
+Moreover, it provides a unified framework for FRP predic-
+tion across multiple protocols and port types. As detailed in
+§III, autoregressive models optimize the alignment between
+predicted and actual FRP distributions by minimizing KL
+divergence.
+
+2) Why Transformer Model: The self-attention mechanism
+in Transformers excels at modeling complex relationships
+between FRP patterns and influencing factors (e.g., AS num-
+bers, organization types). The multi-head attention mecha-
+nism (§IV-B) enables simultaneous focus on semantic features
+at different positions, which is crucial for learning cross-
+organizational FRP distribution patterns. Additionally, com-
+pared to RNN architectures [36], Transformers offer superior
+parallel computing capabilities, significantly improving pro-
+cessing efficiency for large-scale IPv6 address spaces.
+
+B. Semantic Learning
+
+As mentioned above, FRP patterns are not randomly dis-
+including
+
+tributed—they are influenced by various factors,
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+MHSALN BlockFFNEmbeddingAdd&NormSoftMax×N2600:9000:2300::/51AS:165092600:9000:2300::/48AS InformationBGP PrefixHitlist DatasetTokenizerTCP 80Active TypeComputer and Information TechnologySub Category : Hosting and Cloud ProviderCategory InformationAmazon.com, Inc.Organization InformationMASKED-MHSALN BlockFFNEmbeddingAdd&NormSoftMax×NSemantic LearningLabelOutputGranularity CorrectionScannerOnline Scanning(§IV-D)Semantic Learning(§IV-B)AS InformationFRP PatternTransformerBGP PrefixActive TypePrefix Inference(§IV-C)Target BGP PrefixFRP DatasetICMPv6-FRPTCP80-FRP·········TransformerPredicted FRPlearn sequence-dependent patterns crucial for accurate FRP
+prediction.
+
+IE = T E + P E,
+(4)
+To accommodate the variable-length nature of FRP sequences,
+special tokens—BOS (Begin Of Sentence) and EOS (End Of
+Sentence)—are added to each sequence to explicitly denote
+its start and end. By incorporating these boundary markers,
+Gungnir is able to mitigate the risk of falling into the so-
+called “FRP Misleading” where incorrect assumptions about
+sequence boundaries could otherwise compromise prediction
+accuracy.
+
+Decoder. The decoder consists of multiple encoding layers
+stacked on top of each other, each consisting of a multi-head
+self-attention (MHSA) layer, a layer normalization block (LN-
+block), and a feed-forward neural network (FFN). The encoded
+embedding vector X is computed with the matrices WQ, WK,
+and WV , respectively, to obtain:
+
+Q = XWQ, K = XWK,
+
+(5)
+Matrix operations are performed on the resulting matrices
+
+V = XWV
+
+Q, K, V , and attention weights are calculated :
+
+Attention = softmax
+
+· V,
+
+(6)
+
+(cid:32)
+
+(cid:33)
+
+QK T
+(cid:112)d/h
+
+where d is the dimension of the key vector and h is the
+number of attention heads. The results of the computations
+for each head are stitched together and passed through a linear
+transformation:
+MultiHead(Q, K, V ) = Concat(Attention1 · · · Attentionh) · WO
+Z = LayerNorm(X + Dropout(MultiHead(Q, K, V ))),
+
+(7)
+where WO ∈ Rd×d is the output projection matrix. To
+prevent gradient vanishing, residual connections are added to
+the output X, followed by normalization to obtain the final
+output Z. The final Z is added to the original input after
+passing through a feed-forward neural network, and the output
+is obtained by layer normalization.
+
+Loss Function. During semantic learning, the model can
+learn the pattern representation of FRPs based on the input
+sequences in the routing prefix part, which captures the long
+sequence dependencies. The final loss function optimizes the
+difference between the predicted probability distribution and
+the distribution of the true labels by calculating the cross-
+entropy loss. As mentioned in §III, our core objective is to
+generate new patterns with high similarity through the original
+FRP patterns. In this task, the fact that the real FRP pattern
+distributions are pre-determined stationary distributions allows
+us to employ a more efficient optimization strategy: minimiz-
+ing the KL divergence is mathematically exactly equivalent to
+minimizing the cross-entropy loss.
+
+Loss(y, ˆy) = −
+
+yi log(ˆyi)
+
+(8)
+
+(cid:88)
+
+where y is the distribution of the true labels, and ˆyi is the
+distribution of probabilities predicted by the model.
+
+i
+
+Masking. To have a consistent logical order of sequence
+generation, all token generation relies only on the presequence
+tokens that have been generated. We perform a masking op-
+
+eration on the attention scores to ensure that the model learns
+semantically by associating information such as protocol types
+and business relationships during semantic learning, and to
+avoid that during the process of learning FRP’s schema, the
+model can see the future information:
+
+Attentioni,j = Attentioni,j + Mi,j
+(9)
+For an n×n attention matrix, the mask Mi,j can be computed
+as follows:
+
+(cid:40)
+0
+if j ≤ i
+−∞ if j > i
+
+(10)
+
+Mi,j =
+
+C. Prefix Inference
+
+In semantic learning, the model has learned FRP patterns
+under multiple relational attributes, and next, the model needs
+to generate FRPs for the given conditions. Previous work, such
+as Luori [25], only predicts single-type information and only
+for a single active type FRP. To allow the model to generate
+patterns of FRPs based on joint probabilities given multiple
+conditions, we employ prefix inference. As shown in Figure
+5, its decision process can be viewed as a Markov chain, and
+for a given known FRP, the model will learn a decision process
+as follows:
+
+w1 ← P (wC | wP )
+w2 ← P (wSC | wC, wP )
+
+. . .
+
+wi−1 ← P (wF RP4 | wF RP3 . . . wAS, wORG, wSC, wC, wP )
+wi ← P (wF RP5 | wF RP4 . . . wAS, wORG, wSC, wC, wP )
+(11)
+Given the token w, where wP is the active protocol of the
+FRP, wC is the commercial category, wSC is the commercial
+subcategory, wORG is the organization to which the FRP
+belongs, and wAS is the AS to which the FRP belongs.
+
+Sampling. In the process of prefix inference, the model
+will give the probability value P (wi) of predicting the next
+token w for the existing sequences. To balance the exploitation
+and exploration, we rank these probabilities P (wi) from the
+largest to the smallest and calculate the cumulative probability
+C(wi) for the token satisfying the probability p of the token.
+The tokens that meet the probability p are sampled according
+to the probability, i.e., Top-p sampling is performed.
+
+C(wi) ≥ p , C(wi) =
+
+i
+(cid:88)
+
+j=1
+
+P (wj)
+
+(12)
+
+Therefore, the probability that the next token wi is selected is
+(13)
+
+Pnext(wi) =
+
+wi
+(cid:80) w
+
+Obviously, the value of p will have an impact on the prediction
+result, when p is large, the prediction result is more inclined to
+exploration, and when p is small, the prediction result is more
+inclined to be generated from the data in semantic learning,
+that is, exploitation. We discuss in detail the effect of the value
+of p in §V-D.
+
+D. Online Scanning
+
+The online scanning module executes probing operations
+and collects results based on candidate FRP prefixes generated
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+Fig. 5: Prefix inference framework. The top is the overall process by which the model performs prefix inference, and the
+bottom is the process by which the model specifically makes decisions.
+
+Fig. 6: Granularity correction. After the first probe was per-
+formed, no response was obtained, so the probe length was
+adjusted and the probe was performed again. The above pro-
+cess is repeated until the true FRP particle size is determined.
+
+by the prefix inference module, primarily comprising two
+stages: FRP confirmation and granularity correction. In the
+FRP confirmation phase,
+the module generates IP address
+probes for each candidate prefix and executes scanning oper-
+ations. It then analyzes the probing responses to validate FRP
+prefixes—if all probed IP addresses within a prefix respond
+affirmatively, the prefix is confirmed as a genuine FRP and
+incorporated into the FRP database. The subsequent granular-
+ity refinement stage adjusts prefix lengths based on probing
+outcomes, correcting potential granularity inaccuracies in the
+FRP dataset. This iterative process enhances both the precision
+of FRP identification and the overall accuracy of subsequent
+probing operations.
+
+Granularity Correction. As Erdemir et al. [23] found, the
+current FRP dataset, e.g., the well-known IPv6 hitlist [12],
+suffers from a large number of prefix granularity errors. For
+example, a large number of /48 and /56 prefixes are incorrectly
+categorized as /64 FRPs. The deviation of the prefix length
+distribution in the dataset from the real web environment
+where FRPs are deployed affects the performance of the
+prediction methods, e.g., Gungnir for semantic learning learns
+the wrong sequence distributions, which generates this noise
+in the prefix inference. To solve this problem, we design the
+granularity correction mechanism. By correcting the length of
+existing prefixes, FRPs closer to the true length distribution are
+obtained. As shown in Figure 6, given the initial correction
+length lc, the length of the probed FRPs is gradually taken
+shorter and lc is decayed by half in each round.
+
+V. EVALUATION
+
+A. Experimental Setting
+
+1) Dataset: We utilized 227,894 IPv6 BGP routing prefixes
+from the RouteViews project [37] as target prefixes, along with
+Luori’s publicly available FRP dataset [25] as the initial seed
+set. This dataset contains FRP on multiple ports, including
+ICMPv6, TCP/22, and TCP/443. Notably, the ICMPv6 class
+exhibits the highest activity level, comprising 182,942 active
+FRPs distributed across 4,643 routing prefixes, representing
+both the largest count and spatial coverage among all cate-
+gories.
+
+2) Hyper-parameters: The model employs a 6-layer Trans-
+former decoder architecture with 128-dimensional hidden
+states and 8 attention heads, trained using the Adam optimizer
+with an initial learning rate of 0.001, batch size of 512, for 50
+epochs. During prefix inference, we maintain the same batch
+size (512) with a sampling probability p = 0.6. To ensure fair
+comparison, all methods probe 16 randomly selected addresses
+within candidate FRP prefixes, and a prefix is confirmed as an
+FRP only when all 16 addresses respond positively.
+
+3) Hardware: The experiments were conducted on a host
+machine equipped with an Intel(R) Xeon(R) Gold 6230R CPU
+(2.10 GHz), 256 GB of system memory, and a 100 Mbps
+network connection. For both model training and inference,
+we utilized a single NVIDIA RTX 4090 GPU with 24 GB of
+memory.
+
+B. Evaluation Metrics
+
+• CovSpace: This metric quantifies the address space occu-
+pied by FRPs while normalizing for prefix length varia-
+tions. For instance, a /48 prefix and sixteen /52 prefixes
+each cover 280 addresses (2128−48 = 16 × 2128−52),
+demonstrating equivalent spatial coverage despite differ-
+ing prefix lengths. By eliminating length-dependent bi-
+ases, CovSpace provides an unbiased measure of address
+space utilization. In FRP probing evaluations, discovering
+more FRPs inherently requires identifying more and
+shorter prefixes—making CovSpace a critical perfor-
+mance metric that directly reflects algorithmic efficiency
+in capturing fine-grained address blocks.
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+TokenizationAS:16509Organization: Amazon.com, Inc.Category : Computer and Information TechnologySub Category : Hosting and Cloud Provider2600:9000:2300::/482600:8400:6600::/48AS InformationBGP PrefixOutputTokenizerTransformerInputTop-pSamplePosition EmbeddingToken EmbeddingPretrained modelInput SequenceCATEGORYSUBCATEGORYACTIVETYPEBOSORGAS011100Pattern PredictionTransformer1111EOSPrediction FRPHitlist FRPTrue FRP1stRouting Prefix2nd3rd4thTABLE I: Probing results of Gungnir, Luori, and MAPD on ICMPv6
+
+MAPD
+
+10
+
+Luori
+
+Gungnir
+
+MAPD
+
+30
+
+Luori
+
+Gungnir
+
+MAPD
+
+50
+
+Luori
+
+Gungnir
+
+2,207,921
+
+2,030,473
+
+1,921,238
+
+6,614,739
+
+5,971,404
+
+6,126,213
+
+11,368,977
+
+9,743,160
+
+10,495,104
+
+660
+114
+
+409
+95
+8.32 × 1022 2.73 × 1030 1.17 × 1031
+
+1158
+121
+
+809
+133
+
+1202
+129
+
+1733
+156
+
+909
+143
+
+1765
+141
+
+1903
+169
+
+2.48 × 1023 4.81 × 1030 1.75 × 1031 4.22 × 1023 5.18 × 1030 1.92 × 1031
+
+Bpref ix
+M ethod
+
+BT otal
+CovRouting
+CovAS
+CovSpace
+
+• CovAS and CovRouting: AS Coverage (CovAS) mea-
+sures the number of unique ASes containing detected
+FRPs, while Routing Coverage (CovRouting) counts the
+distinct routing prefixes associated with these FRPs.
+Together, these metrics evaluate the geographical and
+topological diversity of detected FRPs. Ideally, an effec-
+tive probing algorithm should maximize both CovAS and
+CovRouting, indicating broader coverage across diverse
+network infrastructures.
+
+• CovA≥B: On datasets A and B, the number of rout-
+ing prefixes under a single routing prefix in the FRP
+space A is greater than that of B. It is computed as
+follows:
+take the overall coverage routing prefix set
+Rtotal = RA ∪ RB, choose FRPs according to routing
+prefixes from the set Rtotal, and if a certain routing
+FRP space A is greater than or equal to B under the
+prefix, CovA≥B is added as 1. This can be expressed as
+CovA≥B = Bool (SrA ≥ SrB) , r ∈ Rtotal. The reason
+for using this metric is that while CovSpace reflects the
+amount of space occupied by the FRP, this metric is more
+affected by shorter FRPs.
+
+C. Performance Evaluation
+
+1) Probing Effect: Table I and Table II show the probing re-
+sults under ICMPv6, TCP/80 type for three different methods:
+MAPD, Luori, and Gungnir. Bpref ix is the predicted budget
+under each routing prefix(i.e., the number of probes under a
+single prefix b ≤ Bpref ix), while BT otal is the budget used in
+the actual probing process. We adopt a probing methodology
+similar to prior work [14], [17], [21], [25], [29], where one
+budget allows sending probes to 16 addresses within a single
+prefix. The choice of the three budgets Bpref ix = [10, 30, 50]
+is motivated by two factors: (1) prior studies [25] have adopted
+similar budget values for fair comparison, and (2) these
+settings enable FRP probing across target prefixes within a
+manageable and controlled timeframe.
+
+As shown in Table I, Gungnir consistently outperforms both
+MAPD and Luori across all tested prefix budgets (Bpref ix =
+[10, 30, 50]) in terms of routing prefix coverage (CovRouting)
+and autonomous system coverage (CovAS). At Bpref ix = 10,
+Gungnir achieves CovRouting = 1158, increasing the cov-
+erage by 2.8 times and 1.7 times compared to Luori and
+MAPD, respectively. This performance gap further widens
+at Bpref ix = 50, where Gungnir’s CovRouting = 1, 903
+more than doubles MAPD’s result. The coverage space met-
+ric (CovSpace) demonstrates even more striking advantages:
+Gungnir maintains a consistent
+lead of 3.7 − 4.2× over
+Luori and 4.5 × 107 − 1.4 × 108 over MAPD. Notably, at
+
+Bpref ix = 50, Gungnir achieves CovSpace = 1.92×1031, sur-
+passing all other methods by significant margins. These results
+strongly validate the effectiveness of our granularity correction
+algorithm in precisely determining FRP granularities.
+
+Table II shows the budget and coverage when using different
+methods for network probing under TCP/80. Again, Gungnir
+shows significant advantages at all budgets. At Bpref ix = 10,
+CovRouting of Gungnir is 574, which is 3.4 times that of Luori
+and 1.9 times that of MAPD. When Bpref ix increases by 50,
+CovRouting of Gungnir reaches 981, which is 1.5 times that
+of Luori. Meanwhile, the CovSpace of Gungnir stays maximal
+under all budgets, which is 2.4-3.0 times higher than that of
+Luori, while that of MAPD ranges from 1.54 × 1022 − 2.12 ×
+1030 times.
+
+Due to differing budget structures among the three meth-
+ods, we employ a Pareto chart (Figure 7) for performance
+comparison, with the y-axis representing actual budget usage
+(BT otal). Figures 7a and 7b present results for ICMPv6
+and TCP/80 across CovRouting/CovAS and CovSpace met-
+rics respectively. Superior methods are indicated by curves
+closer to the upper-left corner, denoting greater coverage per
+budget. Gungnir demonstrates consistent dominance across all
+metrics, maintaining strong performance even at low budgets
+(Bpref ix = 10) through its flexible length prediction strategy.
+In contrast, Luori’s layer-by-layer search tree approach under-
+performs MAPD at minimal budgets due to its rigid expansion
+mechanism.
+
+2) Operating Time: Table III compares the performance
+of both Luori and Gungnir in terms of operating time.
+The experiment assigns 50 budgets to each routing prefix
+across the Internet, and the average of multiple experiments
+is taken to count the running time. The pre-training time
+and inference time counted here refer to the total time, and
+N refers to the number of target protocols and ports (e.g.,
+TCP/80). Since Luori can only build a tree for a single active
+type, Luori’s method takes about 4.9 × N hours for pre-
+training, while Gungnir uses global information for semantic
+learning, so Gungnir takes only 6.8 hours in total, and the
+global information used also contributes to the accuracy and
+comprehensiveness of the predictions. In the inference phase,
+Luori’s method takes about 85 × N hours, while the Gungnir
+method takes only about 2.5 × N hours, achieving ×34
+increase in inference times on just a single active type. This
+means that if the FRP is probed for 5 active types, Gungnir
+can achieve nearly 7 times improvement in pre-training time
+compared to Luori, and more than 27 times improvement in
+total execution time. This shows the higher efficiency and more
+comprehensive probing capability of Gungnir.
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+TABLE II: Probing results of Gungnir, Luori, and MAPD on TCP/80
+
+MAPD
+
+10
+
+Luori
+
+Gungnir
+
+MAPD
+
+30
+
+Luori
+
+Gungnir
+
+MAPD
+
+50
+
+Luori
+
+Gungnir
+
+2,207,921
+
+2,051,384
+
+1,897,063
+
+6,614,739
+
+6,334,095
+
+6,293,054
+
+11,368,977
+
+10,083,623
+
+11,016,352
+
+306
+47
+
+169
+59
+2.88 × 1022 2.76 × 1029 1.54 × 1030
+
+574
+67
+
+400
+58
+
+498
+74
+
+804
+79
+
+451
+65
+
+672
+88
+
+981
+99
+
+8.54 × 1022 6.35 × 1029 1.76 × 1030 1.44 × 1023 7.28 × 1029 2.12 × 1030
+
+Bpref ix
+M ethod
+
+BT otal
+CovRouting
+CovAS
+CovSpace
+
+(a) CovRouting and CovAS on ICMPv6 and TCP/80
+
+(b) CovSpace on ICMPv6 and TCP/80
+
+Fig. 7: Performance comparison of Gungnir, Luori, and MAPD
+
+TABLE III: Comparison of Luori and Gungnir on operating
+time. Luori1 can only predict routing prefixes that have a
+seeded matchable relationship under a single protocol.
+
+Method
+
+Luori
+
+Gungnir
+
+Pre-training time (h)
+Inference time (h)
+Probing range
+Global information
+
+≈ 4.9 × N
+≈ 85 × N
+Most1
+×
+
+6.8
+≈ 2.5 × N
+All
+✓
+
+N = 1
+Total operating time (h) N = 3
+N = 5
+
+89.9
+269.7
+449.5
+
+9.3
+14.3
+19.3
+
+(a) w/o Granularity Correction (b) w/ Granularity Correction
+Fig. 8: Comparison of FRP set relativity metric CovpA≥pB
+under different hyper-parameters
+
+D. Value of the Hyperparameter p
+
+The sampling probability p serves as a crucial parameter
+in Gungnir’s prediction mechanism, controlling the trade-off
+between pattern exploration and exploitation. Lower values
+of p (approaching 0) cause Gungnir to predominantly repro-
+duce patterns similar to those in the original dataset, while
+higher values (approaching 1) drive the system to predict
+novel patterns. To systematically evaluate this parameter’s
+impact, we conducted experiments using uniformly sampled
+values of p across the [0,1] interval, specifically testing at
+p ∈ {0.2, 0.4, 0.6, 0.8}. Since the ICMPv6 tends to be the most
+
+active in the probing of FRP, we selected it as our baseline
+protocol and performed all predictions within BGP-announced
+routing prefixes. Each routing prefix was predicted 10 times in
+our experiments, with FRPs subsequently filtered out from the
+results. The experimental results for different hyperparameter
+values of p are presented in Table IV. When p is set to 0.2
+or 0.4, the model demonstrates inferior performance on both
+CovAS and CovRouting metrics compared to values of 0.6 and
+0.8, as these lower values constrain the model to generate FRPs
+primarily within already learned patterns. Notably, p values of
+0.6 and 0.8 yield comparable results for both coverage metrics.
+To conduct a more comprehensive comparison, we em-
+ployed the relative metric CovpA≥pB , which evaluates the
+spatial sizes of results across different routing prefixes while
+mitigating the influence of excessively short FRPs on spatial
+measurements. Figure 8 illustrates this comparison, where the
+axis represents set B and the four lines correspond to set A
+with pA values of {0.2, 0.4, 0.6, 0.8}. The analysis reveals
+that Covp0.6≥pB for pA = 0.6 generally exceeds Covp0.8≥pB
+for pA = 0.8, except when pB = 0.8. This exception
+occurs because the metric inherently favors cases where sets
+A and B are identical. Importantly, in all other comparisons,
+pA = 0.6 demonstrates superior performance to pA = 0.8,
+both before and after granularity correction. These findings
+suggest that while p = 0.8 produces larger FRP spaces, these
+gains are likely attributable to a limited number of shorter
+FRPs. This interpretation is supported by Table IV, which
+shows that p = 0.8 fails to significantly improve CovAS and
+CovRouting metrics and underperforms p = 0.6 in some cases.
+Consequently, we recommend using p = 0.6 as the optimal
+sampling value for prefix inference tasks.
+
+E. Effectiveness of Granularity Correction
+
+To verify that Gungnir’s granularity correction can effec-
+tively avoid falling into the “FRP Misleading”, we count the
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+0.250.500.751.00Btotal1e750075010001250150017502000CovRoutingICMPv60.250.500.751.00Btotal1e72004006008001000CovRouting100120140160180CovAS406080100CovASTCP80CovRoutingGungnirLuoriMAPDCovASGungnirLuoriMAPD0.51.0Btotal1e70.00.51.01.52.0CovSpace1e31ICMPv60.51.0Btotal1e70.00.51.01.52.0CovSpace1e30TCP80CovSpaceGungnirLuoriMAPDpB=0.2pB=0.4pB=0.6pB=0.8200400600CovpApBpA=0.2pA=0.4pA=0.6pA=0.8pB=0.2pB=0.4pB=0.6pB=0.8200400600CovpApBpA=0.2pA=0.4pA=0.6pA=0.8TABLE IV: Ablation study of granularity correction
+
+p
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+TABLE V: Comparison of our Our FRPlist, Luori’s FRPlist,
+and Hitlist’s FRPlist
+
+Before Granularity Correction
+
+Dataset
+
+Publication time CovSpace CovAS CovRouting
+
+CovRouting
+CovAS
+CovSpace
+
+CovRouting
+CovAS
+CovSpace
+
+490
+90
+
+546
+92
+
+3.67 × 1026 3.61 × 1026 5.06 × 1026 5.29 × 1026
+
+After Granularity Correction
+
+488
+91
+
+544
+93
+
+595
+110
+
+640
+113
+
+581
+108
+
+631
+112
+
+5.34 × 1030 5.52 × 1030 1.13 × 1031 1.66 × 1031
+
+cases before and after applying the mechanism under these
+four sets of parameters. From Table IV, we can see that the
+experimental results with granularity correction have a certain
+amount of improvement in CovRouting and CovAS, while the
+results with granularity correction are significantly higher than
+the ones without granularity correction in CovSpace, which is
+about ×105 times higher in the space. This is consistent with
+our motivation for designing the granularity correction, i.e.,
+to avoid the original dataset and the prediction process from
+causing Gungnir to fall into the FRP Misleading.
+
+F. Long-term Multi-protocol Probing
+
+Through continuous Internet-wide monitoring spanning over
+three months, we have compiled the most comprehensive FRP
+dataset to date. Our collection encompasses 23 distinct active
+protocol types, including ICMPv6, TCP, and UDP, represent-
+ing the broadest coverage and largest address space currently
+available. As demonstrated in Table V, comparative analysis
+reveals that our dataset significantly outperforms existing FRP
+lists across three key metrics: (1) coverage space, (2) number
+of covered routing prefixes, and (3) count of included ASes,
+with ICMPv6 serving as the primary benchmark for these
+comparisons.
+
+G. FRP Deployment
+
+We conduct a comprehensive analysis of the Internet-wide
+FRP distribution across multiple protocols, employing both
+quantitative and spatial metrics to evaluate deployment scales.
+As detailed in Appendix Tables VII and IX, the distribution
+patterns reveal significant variations across major protocols.
+Notably, three major organizations—Cloudflare, Amazon, and
+Akamai—dominate the ICMPv6 FRP count, collectively ac-
+counting for over 2 million FRPs. Their deployment strategies
+contrast sharply with organizations like SIXNET: while the lat-
+ter occupies vast address spaces, Cloudflare and Amazon im-
+plement fine-grained subnet segmentation, configuring dense
+FRP distributions within smaller prefixes. This aligns with
+known implementations like Linux’s net.ipv6.ip nonlocal bind
+option [25], which enables single-host gateway deployments
+with prefix-wide address binding. Currently, we have identified
+these deployed FRPs within at least 9 ASes by email and
+have not received any error feedback from any of the ASes,
+indicating that our measurements are true and reliable.
+
+H. Active Type Fingerprint
+
+To identify FRPs, we conducted systematic scans of all
+BGP-advertised routing prefixes across the Internet, focusing
+
+Our FRPlist April 30, 2025 2.45 × 1032
+1.95 × 1032
+Luori FRPlist April 30, 2025
+1.01 × 1030
+Hitlist’s FRPlist April 30, 2025
+
+624
+530
+335
+
+8734
+7324
+3237
+
+on ICMPv6 responsiveness and common TCP/UDP ports.
+The scanning methodology targeted a comprehensive set of
+network protocols, with detailed port mappings and their
+associated system functions documented in Appendix Table
+VI. Through this large-scale evaluation, we successfully col-
+lected and categorized 47 distinct active protocol fingerprints
+based on their responsiveness characteristics. These finger-
+prints, representing diverse network behaviors and service
+configurations, are fully enumerated in Appendix Table X. The
+fingerprint classification scheme accounts for both protocol-
+level responsiveness patterns and port-specific behavioral sig-
+natures.
+
+Our analysis of active port fingerprints across Internet-
+wide routing prefixes reveals significant variations in secu-
+rity policies among service providers. Cloud providers like
+Akamai, Bharti, and Google (2,324 routing prefixes) employ
+a minimal exposure strategy, permitting only ICMPv6 for
+basic network connectivity while keeping other ports closed.
+In contrast, major web service providers, including Amazon,
+Cloudflare, and Fastly (1,833 routing prefixes), maintain a
+more open configuration, enabling both ICMPv6 and essential
+web ports (TCP/80 for HTTP service discovery and TCP/443
+for SSL/TLS encryption). A smaller but notable group of host-
+ing providers, such as Rohmad and IP SERVER (395 routing
+prefixes), exhibit a distinct pattern by opening TCP/22 along-
+side ICMPv6, suggesting large-scale SSH service offerings.
+The UDP landscape shows particularly selective deployments,
+with only a few autonomous systems like NAMESHIELD,
+Fastly, and Alibaba maintaining FRPs on UDP/53,
+likely
+supporting external DNS resolution services with potential
+load-balancing capabilities across multiple IP addresses. These
+findings demonstrate how different service models and oper-
+ational requirements shape distinct network security postures
+across the IPv6 ecosystem.
+
+I. FRP Service Analysis
+
+To understand why organizations widely deploy FRPs with
+open ports, we analyzed services under 102,314 prefixes.
+Using Zgrab2 [38], we probed 1.6 million generated addresses
+to identify active services. Appendix Table VIII shows service
+distribution patterns across major providers, revealing their
+operational needs behind FRP configurations.
+
+1) HTTP: We observe that certain ISPs (e.g., Internet
+Rimon and Hughes) and hosting providers (e.g., WOOD-
+SNET) expose port 80 but do not provide HTTP services.
+We know from surveys of email and other methods that many
+organizations will use the addresses under FRP as an address
+pool, and at the egress gateway, the address pool will assign
+a proxy ip for the egress service as a random proxy ip for
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+the outbound service, and in this way can greatly alleviate the
+problem of a single IP limiting [39], [40] the speed of the
+service. This may explain why there is such a huge address
+space open for specific ports, but no corresponding service
+configuration. However, this FRP rate-limiting bypass strategy
+also means that
+the traditional single-ip rate-limiting and
+DDoS defense strategy is invalidated, and the traditional IPv4-
+based security protection mechanisms (such as ACL rules)
+may not be able to effectively identify the abnormal traffic
+of IPv6 fully responsive prefixes, which may generate security
+risks. It is important to note that if these hosts only open ports
+without actually providing any services, this port exposure to
+the public network is likely to be a security risk.
+
+Among the generated addresses, 233, 198(15%) were suc-
+cessfully identified as hosting HTTP services. These respon-
+sive addresses spanned 2,345 routing prefixes managed by 183
+distinct organizations with confirmed HTTP service deploy-
+ments. Notably, Akamai, Amazon, and Incapsula emerged as
+the top three providers—a finding consistent with our prior
+analysis. This alignment reinforces our observation that CDNs
+frequently implement FRPs by enabling HTTP (port 80) across
+all addresses within a prefix. Such configurations serve as a
+critical mechanism for these networks to efficiently deliver
+outbound services at scale.
+
+2) SSH: Among the SSH services scanned, 48,120 gen-
+erated addresses were successfully identified, spanning 573
+routing prefixes across 184 autonomous systems (ASes). Our
+analysis revealed several security risks, including instances
+running outdated versions (e.g., OpenSSH 7.2p2) that retain
+support for deprecated cryptographic algorithms such as diffie-
+hellman-group14-sha1 [41]. A significant portion of these
+FRPs likely belongs to a honeypot system designed to dy-
+namically map unused IPv6 addresses to trap servers for attack
+monitoring and analysis. In this setup, when an attacker scans a
+network segment, unregistered address requests are redirected
+to a honeypot, which consolidates multiple trap addresses into
+a single service IP. This architecture enables efficient aggrega-
+tion of attack traffic across a vast address space—explaining
+the observed concentration of similarly configured hosts under
+shared prefixes. The deliberate retention of OpenSSH 7.2p2
+may serve as an active lure, exploiting attackers’ propensity
+to target known vulnerabilities (e.g., CVE-2017-15906). By
+maintaining compatibility with weak algorithms (e.g., diffie-
+hellman-group14-sha1), the honeypot could further act as a
+protocol-level decoy, capitalizing on scanning tools’ tendency
+to prioritize such algorithms to enhance detection rates.
+
+Additionally, a small number of non-honeypot hosts were
+identified. To enhance security, we recommend enforcing
+key-based authentication (disabling passwords), changing the
+default SSH port, restricting access via firewall rules, and
+deploying tools like Fail2ban to block brute-force attacks.
+
+3) SSL/TLS: Our analysis identified 20,391 SSL/TLS-
+enabled addresses across 579 routing prefixes and 113 ASes.
+A significant portion of FRPs utilize shared certificates, par-
+ticularly from Cloudflare (e.g., Cloudflare issues certificates
+for its domain cdnjs.cloudflare.com and massively deploys the
+
+certificates under its FRP) and other providers employing wild-
+card certificates (*.xxxx.com). While this approach streamlines
+HTTPS content delivery and reduces certificate management
+costs, it introduces potential risks - a single compromised
+private key could affect multiple nodes. Certificate validity
+analysis shows most vendors comply with industry standards
+for short validity periods. However, for the few with extended
+validity, we recommend implementing automated certificate
+management systems for FRPs. Additional details are available
+in Appendix Figure 9b.
+
+VI. ETHICAL CONSIDERATIONS
+
+In order to avoid impacting the real Internet [42], [43], all
+our experiments are carried out at a single measurement point
+using a single host, and the scanning speed is controlled at
+1 Mbps. With different BGP routing prefixes, our scanning
+requests are dispersed at different times during the test time
+period, and the destination addresses are completely broken
+up, and at the same time, a single scanning request is not more
+than 10 minutes. The experiments provide an exit mechanism,
+and for ASes that do not wish to be detected by the scan,
+we include them in the blocking table and do not conduct the
+experiments. In order to avoid attacks on real organizations and
+network infrastructures, for possible vulnerabilities, we only
+judged by fingerprint discrimination and version information,
+and did not perform any penetration tests on real hosts, etc.,
+to verify the existence of vulnerabilities.
+
+VII. CONCLUSION
+
+In this paper, we propose an autoregressive model-based
+multi-protocol unified FRP probing algorithm named Gungnir,
+which aims to address the network asset scanning challenges
+posed by FRPs in IPv6 networks. Gungnir uses autoregres-
+sive modeling to learn FRP pattern representations through
+semantics by capturing the relationships among FRPs. With
+the same budget, Gungnir improves the probing efficiency
+by nearly 27 times, extends the coverage space by 4.2 times,
+and covers more autonomous systems and routing prefixes to
+achieve SOTA performance. Additional experiments validate
+the effectiveness of the hyperparameter and granularity cor-
+rection mechanisms. To facilitate better community research
+in active addresses and FRPs, this paper makes the code and
+all data publicly available and constructs a list of the most
+extensive FRPs containing multiple active types. Furthermore,
+it provides new ideas for Internet asset scanning and network
+security analysis.
+
+ACKNOWLEDGMENTS
+
+We sincerely thank our shepherd and the anonymous re-
+viewers for their insightful comments and helpful feedback.
+This work is supported in part by the Beijing Natural Science
+Foundation under Grant No. 4252017, the National Natural
+Science Foundation of China under Grant No. 62302253,
+and the Zhongguancun Laboratory Project. Lin He is the
+corresponding author of this paper.
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+REFERENCES
+
+[1] Z. Durumeric, E. Wustrow, and J. A. Halderman, “Zmap: Fast internet-
+wide scanning and its security applications,” in 22nd USENIX Security
+Symposium (USENIX Security 13), 2013, pp. 605–620.
+
+[2] Z. Durumeric, F. Li, J. Kasten, J. Amann, J. Beekman, M. Payer,
+N. Weaver, D. Adrian, V. Paxson, M. Bailey et al., “The matter
+of heartbleed,” in Proceedings of
+the 2014 conference on internet
+measurement conference, 2014, pp. 475–488.
+
+[3] L. Izhikevich, G. Akiwate, B. Berger, S. Drakontaidis, A. Ascheman,
+P. Pearce, D. Adrian, and Z. Durumeric, “Zdns: a fast dns toolkit
+for internet measurement,” in Proceedings of the 22nd ACM Internet
+Measurement Conference, 2022, pp. 33–43.
+
+[4] M. Gharaibeh, A. Shah, B. Huffaker, H. Zhang, R. Ensafi, and C. Pa-
+padopoulos, “A look at router geolocation in public and commercial
+databases,” in Proceedings of the 2017 Internet Measurement Confer-
+ence, 2017, pp. 463–469.
+
+[5] M. S. Pour, C. Nader, K. Friday, and E. Bou-Harb, “A comprehensive
+survey of recent internet measurement techniques for cyber security,”
+Computers & Security, vol. 128, p. 103123, 2023.
+
+[6] E. Rye and D. Levin, “Ipv6 hitlists at scale: Be careful what you wish
+for,” in Proceedings of the ACM SIGCOMM 2023 Conference, 2023,
+pp. 904–916.
+
+[7] X. Li, B. Liu, X. Zheng, H. Duan, Q. Li, and Y. Huang, “Fast ipv6
+network periphery discovery and security implications,” in 2021 51st
+Annual IEEE/IFIP International Conference on Dependable Systems and
+Networks (DSN).
+
+IEEE, 2021, pp. 88–100.
+
+[8] K. Vermeulen, J. P. Rohrer, R. Beverly, O. Fourmaux, and T. Friedman,
+“Diamond-miner: Comprehensive discovery of the internet’s topology
+diamonds,” in 17th USENIX Symposium on Networked Systems Design
+and Implementation (NSDI 20), 2020, pp. 479–493.
+
+[9] J. Zhou, Y. Liu, L. He, X. Shi, Y. Yang, C. Wei, D. Cheng, W. Gong,
+and J. Yang, “Lightning in the dark: Uncovering global ipv6 router
+interfaces and their security implications,” in Proceedings of the 33rd
+IEEE International Conference on Network Protocols (ICNP 2025),
+Seoul, South Korea, 2025.
+
+[10] J. Zhou, Y. Liu, L. He, Y. Yang, X. Shi, D. Cheng, C. Wei, Y. Fan,
+and G. Song, “Subrecon: Efficient internet-wide ipv6 subnet discovery
+and its applications,” in Proceedings of the 33rd IEEE International
+Conference on Network Protocols (ICNP 2025), Seoul, South Korea,
+2025.
+
+[11] Google LLC, “Google ipv6 statistics,” https://www.google.com/intl/en/
+
+ipv6/statistics.html, 2025.
+
+[12] O. Gasser, Q. Scheitle, P. Foremski, Q. Lone, M. Korczynski, S. D.
+Strowes, L. Hendriks, and G. Carle, “Clusters in the expanse: Under-
+standing and unbiasing ipv6 hitlists,” in Proceedings of the 2018 Internet
+Measurement Conference. New York, NY, USA: ACM, 2018.
+[13] J. Zirngibl, L. Steger, P. Sattler, O. Gasser, and G. Carle, “Rusty clusters?
+dusting an ipv6 research foundation,” in Proceedings of the 22nd ACM
+Internet Measurement Conference, 2022, pp. 395–409.
+
+[14] T. Yang, Z. Cai, B. Hou, and T. Zhou, “6forest: An ensemble
+learning-based approach to target generation for internet-wide ipv6
+IEEE Conference on
+scanning,”
+Computer Communications, May 2022.
+[Online]. Available: http:
+//dx.doi.org/10.1109/infocom48880.2022.9796925
+
+in IEEE INFOCOM 2022 -
+
+[15] B. Hou, Z. Cai, K. Wu, J. Su, and Y. Xiong, “6hit: A reinforcement
+learning-based approach to target generation for internet-wide ipv6
+scanning,” in IEEE INFOCOM 2021-IEEE Conference on Computer
+Communications.
+
+IEEE, 2021, pp. 1–10.
+
+[16] Z. Liu, Y. Xiong, X. Liu, W. Xie, and P. Zhu, “6tree: Efficient dynamic
+discovery of active addresses in the ipv6 address space,” Computer
+Networks, vol. 155, pp. 31–46, 2019.
+
+[17] G. Song, J. Yang, L. He, Z. Wang, G. Li, C. Duan, Y. Liu, and Z. Sun,
+“Addrminer: A comprehensive global active ipv6 address discovery
+system.”
+
+[18] J. Zhou, L. He, Y. Yang, X. Shi, D. Cheng, J. E, Y. Liu, and D. Zhang,
+“6map: Enabling fast active ipv6 address discovery with programmable
+switches,” in Proceedings of the 44th IEEE Conference on Computer
+Communications (INFOCOM 2025), London, United Kingdom, 2025.
+[19] W. Zhang, G. Song, L. He, J. Lin, S. Wu, Z. Wang, C. Li, and J. Yang,
+“6vision: Image-encoding-based ipv6 target generation in few-seed
+scenarios,” in Proceedings of the 32nd IEEE International Conference
+on Network Protocols (ICNP 2024), Charleroi, Belgium, 2024, pp. 1–12.
+
+[20] G. Song, L. He, Z. Wang, J. Yang, T. Jin, J. Liu, and G. Li, “Towards
+the construction of global ipv6 hitlist and efficient probing of ipv6
+address space,” in Proceedings of the 28th IEEE/ACM 28th International
+Symposium on Quality of Service (IWQoS 2020), Virtual, 2020, pp. 1–
+10.
+
+[21] G. Song, J. Yang, Z. Wang, L. He, J. Lin, L. Pan, C. Duan, and X. Quan,
+“Det: Enabling efficient probing of ipv6 active addresses,” IEEE/ACM
+Transactions on Networking, vol. 30, no. 4, pp. 1629–1643, 2022.
+[22] Y. Liu, G. Ren, J. Wu, S. Zhang, L. He, and Y. Jia, “Building an ipv6
+address generation and traceback system with nidtga in address driven
+network,” Science China Information Sciences, vol. 58, no. 12, pp. 1–14,
+2015. [Online]. Available: https://doi.org/10.1007/s11432-015-5461-0
+
+[23] M. Erdemir, F. Li, and P. Pearce, “Understanding ipv6 aliases and
+detection methods,” in International Conference on Passive and Active
+Network Measurement. Springer, 2025, pp. 44–73.
+
+[24] W. Eddy, TCP SYN Flooding Attacks and Common Mitigations, Apr
+
+2015. [Online]. Available: https://doi.org/10.17487/rfc4987
+
+[25] D. Cheng, L. He, C. Wei, Q. Yin, B. Jin, Z. Wang, X. Pan, S. Zhou,
+Y. Liu, S. Zhang et al., “Luori: Active probing and evaluation of internet-
+wide ipv6 fully responsive prefixes,” in 2024 IEEE 32nd International
+Conference on Network Protocols (ICNP).
+
+IEEE, 2024, pp. 1–12.
+
+[26] A. Murdock, F. Li, P. Bramsen, Z. Durumeric, and V. Paxson, “Target
+generation for internet-wide ipv6 scanning,” in Proceedings of the 2017
+Internet Measurement Conference, 2017, pp. 242–253.
+
+[27] P. Sattler, J. Zirngibl, M. Jonker, O. Gasser, G. Carle, and R. Holz,
+“Packed to the brim: Investigating the impact of highly responsive
+prefixes on internet-wide measurement campaigns,” Proceedings of the
+ACM on Networking, vol. 1, no. CoNEXT3, pp. 1–21, 2023.
+
+[28] L. Steger, L. Kuang, J. Zirngibl, G. Carle, and O. Gasser, “Target
+acquired? evaluating target generation algorithms for ipv6,” in 2023 7th
+Network Traffic Measurement and Analysis Conference (TMA).
+IEEE,
+2023, pp. 1–10.
+
+[29] T. Yang, B. Hou, Z. Cai, K. Wu, T. Zhou, and C. Wang, “6graph: A
+graph-theoretic approach to address pattern mining for internet-wide
+ipv6 scanning,” Computer Networks, p. 108666, Feb 2022. [Online].
+Available: http://dx.doi.org/10.1016/j.comnet.2021.108666
+
+[30] P. Foremski, D. Plonka, and A. Berger, “Entropy/ip: Uncovering struc-
+ture in ipv6 addresses,” in Proceedings of the 2016 Internet Measurement
+Conference, 2016, pp. 167–181.
+
+[31] I. Csisz´ar, “I-divergence geometry of probability distributions and min-
+imization problems,” The annals of probability, pp. 146–158, 1975.
+[32] Z. Gao and Y. Sun, “Trustworthy evaluation of generative ai models,”
+
+2025. [Online]. Available: https://arxiv.org/abs/2501.18897
+
+[33] J. Cui, Z. Tian, Z. Zhong, X. Qi, B. Yu, and H. Zhang, “Decoupled
+kullback-leibler divergence loss,” Advances in Neural Information Pro-
+cessing Systems, vol. 37, pp. 74 461–74 486, 2024.
+
+[34] R. Hinden and S. Deering, “Rfc 4291: Ip version 6 addressing architec-
+
+ture,” 2006.
+
+[35] K. Gregor, I. Danihelka, A. Mnih, C. Blundell, and D. Wierstra, “Deep
+the 31st International
+autoregressive networks,” in Proceedings of
+Conference on Machine Learning,
+ser. Proceedings of Machine
+Learning Research, E. P. Xing and T. Jebara, Eds., vol. 32, no. 2.
+Bejing, China: PMLR, 22–24 Jun 2014, pp. 1242–1250. [Online].
+Available: https://proceedings.mlr.press/v32/gregor14.html
+
+[36] L. R. Medsker, L. Jain et al., “Recurrent neural networks,” Design and
+
+applications, vol. 5, no. 64-67, p. 2, 2001.
+
+[37] Routeviews, “University of oregon route views project,” https://www.
+
+routeviews.org/routeviews/, 2024.
+
+[38] T. zmap Team, “zgrab2 repository,” https://github.com/zmap/zgrab2,
+
+Mar. 2023, [GitHub repository, version v2.0.0, accessed 2024-03-20].
+
+[39] K. Vermeulen, B. Ljuma, V. Addanki, M. Gouel, O. Fourmaux, T. Fried-
+man, and R. Rejaie, “Alias resolution based on icmp rate limiting,”
+in Passive and Active Measurement: 21st International Conference,
+PAM 2020, Eugene, Oregon, USA, March 30–31, 2020, Proceedings
+21. Springer, 2020, pp. 231–248.
+
+[40] H. Guo and J. Heidemann, “Detecting icmp rate limiting in the internet,”
+in Passive and Active Measurement: 19th International Conference, PAM
+2018, Berlin, Germany, March 26–27, 2018, Proceedings 19. Springer,
+2018, pp. 3–17.
+
+[41] GitHub, “Github crypto deprecation notice update,” https://github.blog/
+news-insights/company-news/crypto-deprecation-notice-update-1/, May
+2023.
+https://github.blog/news-insights/
+company-news/crypto-deprecation-notice-update-1/
+
+Available:
+
+[Online].
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+[42] E. Kenneally and D. Dittrich, “The menlo report: Ethical principles
+guiding information and communication technology research,” SSRN
+Electronic Journal, Jun 2014. [Online]. Available: http://dx.doi.org/10.
+2139/ssrn.2445102
+
+[43] C. Partridge and M. Allman, “Ethical considerations in network
+measurement papers,” Communications of the ACM, vol. 59, no. 10, p.
+58–64, Sep 2016. [Online]. Available: https://doi.org/10.1145/2896816
+
+APPENDIX
+TABLE VI: Common ports and their corresponding services
+
+TABLE IX: Top 10 ASes by CovSpace of active FRPs col-
+lected for ICMPv6, TCP/80, and TCP/443
+
+ICMPv6
+
+TCP/80
+
+TCP/443
+
+AS
+
+ORG
+
+Space
+
+AS
+
+214168
+
+SIXNET
+
+2.22 × 1031
+
+51088
+
+ORG
+
+A2B
+
+Space
+
+AS
+
+3.80 × 1030
+
+51088
+
+ORG
+
+A2B
+
+60781
+
+LeaseWeb
+
+2.08 × 1031
+
+18779
+
+EGIHosting
+
+3.80 × 1030
+
+216271
+
+NETLABS
+
+215158
+
+Peerlink LTD
+
+1.39 × 1031
+
+204916
+
+RACKTECH
+
+1.59 × 1030
+
+205807
+
+Essener
+
+34984
+
+Superonline
+
+1.15 × 1031
+
+61400
+
+Start
+
+7.92 × 1029
+
+209242
+
+Cloudflare
+
+216157
+
+SIXNET
+
+8.95 × 1030
+
+210644
+
+AEZA
+
+6.34 × 1029
+
+42692
+
+Overweb
+
+197992
+
+DEFSOLUTION
+
+7.77 × 1030
+
+33856
+
+Turkiye
+
+6.34 × 1029
+
+54113
+
+Fastly
+
+28753
+
+Leaseweb
+
+7.29 × 1030
+
+216271
+
+NETLABS
+
+6.34 × 1029
+
+3462
+
+hinet
+
+Port
+
+TCP/21
+
+TCP/22
+
+TCP/25
+
+TCP/80
+
+TCP/110
+
+TCP/443
+
+TCP/1433
+
+TCP/3306
+
+UDP/53
+
+46573
+
+LayerHost
+
+6.97 × 1030
+
+43350
+
+NForce
+
+6.34 × 1029
+
+34939
+
+nextdns
+
+Service
+
+FTP
+
+SSH
+
+SMTP
+
+HTTP
+
+POP3
+
+HTTPS
+
+SQL Server
+
+MySQL
+
+DNS
+
+215427
+
+revonia
+
+6.34 × 1030
+
+205807
+
+Essener
+
+6.34 × 1029
+
+202888
+
+UPSTREAM
+
+18779
+
+EGIHOSTING
+
+5.70 × 1030
+
+34665
+
+Petersburg
+
+3.91 × 1029
+
+214040
+
+RUNNAN WEN
+
+Space
+
+3.80 × 1030
+
+6.33 × 1029
+
+6.33 × 1029
+
+2.37 × 1029
+
+1.58 × 1029
+
+7.92 × 1028
+
+7.92 × 1028
+
+7.92 × 1028
+
+7.92 × 1028
+
+2.47 × 1028
+
+TABLE X: FRP fingerprint for 227,894 BGP routing prefixes
+across the entire Internet
+
+ICMPv6
+
+TCP
+
+UDP
+
+Counts
+
+Typical Type
+
+21
+
+22
+
+25 80
+
+110
+
+443
+
+3306
+
+1433
+
+53
+
+(a) Distribution of validity period of address certificates
+under FRP
+
+(b) Distribution of validity period of address leaf certifi-
+cates under FRP
+
+Fig. 9: Distribution of validity period of address all/leaf
+certificates under FRP
+
+TABLE VII: Top 10 ASes with active FRPs for ICMPv6,
+TCP/80, and TCP/443
+
+AS
+
+13335
+
+16509
+
+20940
+
+36183
+
+32934
+
+19551
+
+47583
+
+34984
+
+ICMPv6
+
+TCP/80
+
+TCP/443
+
+ORG
+
+#FRPs
+
+AS
+
+ORG
+
+#FRPs
+
+AS
+
+ORG
+
+#FRPs
+
+Cloudflare
+
+1,010,784
+
+20940
+
+Akamai
+
+321,472
+
+6621
+
+Hughes
+
+194,496
+
+Amazon
+
+Akamai
+
+Akamai
+
+Facebook
+
+Incapsula
+
+Hostinger
+
+661,984
+
+6621
+
+Hughes
+
+200,192
+
+20940
+
+Akamai
+
+447,872
+
+19551
+
+Incapsula
+
+170,036
+
+16509
+
+Amazon
+
+241,376
+
+55547
+
+WoodsDale
+
+52,224
+
+22773
+
+Cox
+
+159,872
+
+47583
+
+Hostinger
+
+32,720
+
+9009
+
+M247
+
+57,216
+
+42925
+
+Internet Rimon
+
+27,616
+
+62240
+
+Clouvider
+
+35,321
+
+16509
+
+Amazon
+
+22,368
+
+42003
+
+OGERO
+
+Superonline
+
+28,128
+
+215304
+
+YUWAN
+
+20,384
+
+40509
+
+Fly.io
+
+204916
+
+RACKTECH
+
+28,032
+
+22773
+
+Cox
+
+13,440
+
+28613
+
+HUGHES
+
+36492
+
+Google
+
+27,936
+
+10881
+
+FUNPAR
+
+9,728
+
+197207 mci.ir
+
+42,784
+
+22,688
+
+19,840
+
+14,240
+
+12,800
+
+12,128
+
+11,200
+
+10,304
+
+9,600
+
+TABLE VIII: Top 10 ASes with hosts offering HTTP,
+SSL/TLS, and SSH services
+
+AS
+
+ORG
+
+20940 Akamai
+
+16509 Amazon
+
+19551
+
+Incapsula
+
+47583 Hostinger
+
+13335 Cloudflare
+
+HTTP
+
+SSL/TLS
+
+SSH
+
+Counts AS
+
+ORG
+
+Counts AS
+
+ORG
+
+4,368,512 47583 Hostinger
+
+305,344 214610 YangXu Liao
+
+663,072 34762 Combell NV
+
+81,088 62240 Clouvider
+
+Counts
+
+115,456
+
+87,200
+
+648,416 19551
+
+Incapsula
+
+50,464 60781
+
+LeaseWeb Netherlands
+
+86,112
+
+302,912 13335 Cloudflare
+
+23,712 51396
+
+Pfcloud UG
+
+269,184 20940 Akamai
+
+23,584 61400
+
+Start LLC
+
+7713
+
+PT Telekomunikasi
+
+82,336 198066 Grupo Loading Systems
+
+20,352 214040 RUNNAN WEN
+
+34762 Combell NV
+
+82,272 210403 Groupe LWS SARL
+
+18,688 44812
+
+IP SERVER LLC
+
+9500
+
+One New Zealand Group
+
+78,304 12654 RIPE NCC
+
+17,760 44354 BROCK VOJKOVIC
+
+54113
+
+Fastly
+
+61400
+
+Start LLC
+
+75,232 48254
+
+20i Limited
+
+11,488 204490 Kontel LLC
+
+66,560 216271 NETLABS LLC
+
+10,624 215304 YUWAN NETWORKS
+
+48,224
+
+215575 HIGH PING
+
+42,048 63410
+
+PrivateSystems
+
+8,096 6939
+
+Hurricane Electric LLC 42,368
+
+6762
+
+TELECOM ITALIA
+
+36,416 200260 Debugged Ltd
+
+7,904 214911 Li Hang
+
+37,120
+
+80,192
+
+63,840
+
+59,296
+
+58,144
+
+55,968
+
+52,416
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓ ✓
+
+✓ ✓ ✓ ✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓ ✓ ✓ ✓
+
+✓ ✓ ✓ ✓ ✓
+
+✓ ✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓ ✓ ✓ ✓
+
+✓
+
+✓ ✓ ✓ ✓ ✓
+
+✓ ✓
+
+✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓
+
+✓
+
+✓
+
+✓ ✓ ✓
+
+✓ ✓
+
+✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓ ✓
+
+✓
+
+✓ ✓ ✓
+
+✓ ✓ ✓
+
+✓ ✓
+
+✓
+
+✓ ✓ ✓ ✓
+
+✓ ✓ ✓
+
+✓
+
+✓ ✓ ✓ ✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓ ✓
+
+✓
+
+✓ ✓ ✓ ✓
+
+222,572
+
+2,324
+
+1,833
+
+395
+
+220
+
+105
+
+100
+
+54
+
+52
+
+42
+
+29
+
+22
+
+22
+
+19
+
+13
+
+12
+
+12
+
+7
+
+6
+
+5
+
+5
+
+3
+
+3
+
+3
+
+3
+
+3
+
+3
+
+2
+
+2
+
+2
+
+2
+
+2
+
+2
+
+2
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+1
+
+Akamai/Bharti/Google
+
+Amazon/Cloudflare
+
+Rohmad/IP SERVER
+
+Incapsula
+
+Fly.io/Cloudflare
+
+Vostrikov/Orange Tunisie
+
+Amazon/Fastly
+
+RADISHCLOUD/YUWAN
+
+M247/Amazon
+
+Start/Pfcloud
+
+Amazon/A2B
+
+LIBANTELECOM/A2B
+
+Cloudflare/Fastly
+
+Vostrikov
+
+CERNET
+
+CERNET
+
+YUWAN NETWORKS
+
+EGIHosting
+
+Nanning Huifa
+
+LIBANTELECOM
+
+CERNET
+
+NAMESHIELD/Fastly
+
+Alibaba
+
+Fly.io
+
+YUWAN NETWORKS
+
+Mingyang Shen
+
+GOVERNMENT
+
+Sneaker
+
+Alibaba
+
+Cr0bar
+
+Jikai Ren
+
+YUWAN NETWORKS
+
+UPSTREAM
+
+Kontel
+
+Turbo Technology
+
+NeocomISP
+
+Chunghwa Telecom
+
+Iron Mountain
+
+Cloudflare
+
+Incapsula
+
+XuanMing
+
+Skhron OU
+
+Sky Telecom
+
+Equinox
+
+RACKTECH
+
+Alexandre
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+✓
+
+Authorized licensed use limited to: Tsinghua University. Downloaded on October 18,2025 at 02:22:54 UTC from IEEE Xplore.  Restrictions apply. 
+
+05000100001500020000250003000035000Validity periods(days)0500010000FrequencyValidity periods - Frequency Distribution 05000100001500020000250003000035000Validity periods(days)0250050007500FrequencyValidity periods - Frequency Distribution 

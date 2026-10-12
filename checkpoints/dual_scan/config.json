@@ -1,0 +1,23 @@
+{
+  "d_model": 128,
+  "num_layers": 4,
+  "vocab_size": 3,
+  "seq_len": 128,
+  "ssm_d_state": 16,
+  "ssm_d_conv": 4,
+  "coarse_end": 32,
+  "medium_end": 64,
+  "as_embed_dim": 32,
+  "org_embed_dim": 16,
+  "cat1_embed_dim": 8,
+  "cat2_embed_dim": 8,
+  "proto_embed_dim": 4,
+  "geo_embed_dim": 8,
+  "rtt_feat_dim": 3,
+  "num_as": 300,
+  "num_org": 273,
+  "num_cat1": 15,
+  "num_cat2": 24,
+  "num_proto": 4,
+  "num_geo": 51
+}
